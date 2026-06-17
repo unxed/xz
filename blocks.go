@@ -85,7 +85,7 @@ func ParseBlocks(r io.ReaderAt, size int64) ([]Block, error) {
 
 		var totalPadded int64
 		for _, rec := range records {
-			totalPadded += rec.unpaddedSize
+			totalPadded += (rec.unpaddedSize + 3) &^ 3
 		}
 
 		streamStart := indexOffset - totalPadded - HeaderLen
@@ -120,14 +120,15 @@ func ParseBlocks(r io.ReaderAt, size int64) ([]Block, error) {
 		currentOffset := s.startOffset + int64(HeaderLen)
 
 		for _, rec := range s.records {
+			paddedSize := (rec.unpaddedSize + 3) &^ 3
 			blocks = append(blocks, Block{
 				Offset:             currentOffset,
-				CompressedSize:     rec.unpaddedSize,
+				CompressedSize:     paddedSize,
 				UncompressedOffset: currentUncomp,
 				UncompressedSize:   rec.uncompressedSize,
 				StreamFlags:        s.flags,
 			})
-			currentOffset += rec.unpaddedSize
+			currentOffset += paddedSize
 			currentUncomp += rec.uncompressedSize
 		}
 	}
