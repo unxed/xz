@@ -679,7 +679,7 @@ func readIndexBody(r io.Reader, expectedRecordLen int) (records []record, n int6
 	if recLen < 0 || uint64(recLen) != u {
 		return nil, n, errors.New("xz: record number overflow")
 	}
-	if recLen != expectedRecordLen {
+	if expectedRecordLen >= 0 && recLen != expectedRecordLen {
 		return nil, n, fmt.Errorf(
 			"xz: index length is %d; want %d",
 			recLen, expectedRecordLen)
