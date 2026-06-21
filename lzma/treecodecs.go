@@ -41,9 +41,46 @@ func (tc *treeCodec) Decode(d *rangeDecoder) uint32 {
 	bits := int(tc.bits)
 	probs := tc.probs
 	_ = probs[len(probs)-1] // Bounds check elimination hint
+
+	nrange := d.nrange
+	code := d.code
+	pos := d.pos
+	limit := d.limit
+	buf := &d.buf
+
 	for j := 0; j < bits; j++ {
-		m = (m << 1) | d.DecodeBit(&probs[m])
+		val := uint32(probs[m])
+		bound := (nrange >> 11) * val
+		if code < bound {
+			nrange = bound
+			probs[m] = prob(val + (2048-val)>>5)
+			m <<= 1
+		} else {
+			code -= bound
+			nrange -= bound
+			probs[m] = prob(val - (val >> 5))
+			m = (m << 1) | 1
+		}
+		if nrange < (1 << 24) {
+			nrange <<= 8
+			if pos < limit {
+				code = (code << 8) | uint32(buf[pos])
+				pos++
+			} else {
+				d.nrange = nrange
+				d.code = code
+				d.pos = pos
+				d.updateCodeSlow()
+				nrange = d.nrange
+				code = d.code
+				pos = d.pos
+				limit = d.limit
+			}
+		}
 	}
+	d.nrange = nrange
+	d.code = code
+	d.pos = pos
 	return m - (1 << uint(bits))
 }
 
@@ -87,11 +124,49 @@ func (tc *treeReverseCodec) Decode(d *rangeDecoder) uint32 {
 	bits := uint(tc.bits)
 	probs := tc.probs
 	_ = probs[len(probs)-1] // Bounds check elimination hint
+
+	nrange := d.nrange
+	code := d.code
+	pos := d.pos
+	limit := d.limit
+	buf := &d.buf
+
 	for j := uint(0); j < bits; j++ {
-		b := d.DecodeBit(&probs[m])
-		m = (m << 1) | b
-		v |= b << j
+		val := uint32(probs[m])
+		bound := (nrange >> 11) * val
+		var bit uint32
+		if code < bound {
+			nrange = bound
+			probs[m] = prob(val + (2048-val)>>5)
+			bit = 0
+		} else {
+			code -= bound
+			nrange -= bound
+			probs[m] = prob(val - (val >> 5))
+			bit = 1
+		}
+		if nrange < (1 << 24) {
+			nrange <<= 8
+			if pos < limit {
+				code = (code << 8) | uint32(buf[pos])
+				pos++
+			} else {
+				d.nrange = nrange
+				d.code = code
+				d.pos = pos
+				d.updateCodeSlow()
+				nrange = d.nrange
+				code = d.code
+				pos = d.pos
+				limit = d.limit
+			}
+		}
+		m = (m << 1) | bit
+		v |= bit << j
 	}
+	d.nrange = nrange
+	d.code = code
+	d.pos = pos
 	return v
 }
 

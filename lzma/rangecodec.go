@@ -176,23 +176,39 @@ func (d *rangeDecoder) possiblyAtEnd() bool {
 // DirectDecodeBits decodes multiple bits with probability 1/2.
 func (d *rangeDecoder) DirectDecodeBits(bits int) uint32 {
 	var v uint32
+	nrange := d.nrange
+	code := d.code
+	pos := d.pos
+	limit := d.limit
+	buf := &d.buf
+
 	for i := 0; i < bits; i++ {
-		d.nrange >>= 1
-		d.code -= d.nrange
-		t := 0 - (d.code >> 31)
-		d.code += d.nrange & t
+		nrange >>= 1
+		code -= nrange
+		t := 0 - (code >> 31)
+		code += nrange & t
 		v = (v << 1) | ((t + 1) & 1)
 
-		if d.nrange < (1 << 24) {
-			d.nrange <<= 8
-			if d.pos < d.limit {
-				d.code = (d.code << 8) | uint32(d.buf[d.pos])
-				d.pos++
+		if nrange < (1 << 24) {
+			nrange <<= 8
+			if pos < limit {
+				code = (code << 8) | uint32(buf[pos])
+				pos++
 			} else {
+				d.nrange = nrange
+				d.code = code
+				d.pos = pos
 				d.updateCodeSlow()
+				nrange = d.nrange
+				code = d.code
+				pos = d.pos
+				limit = d.limit
 			}
 		}
 	}
+	d.nrange = nrange
+	d.code = code
+	d.pos = pos
 	return v
 }
 
@@ -211,38 +227,6 @@ func (d *rangeDecoder) DirectDecodeBit() uint32 {
 		}
 	}
 	return (t + 1) & 1
-}
-
-func (d *rangeDecoder) DecodeBit(p *prob) uint32 {
-	val := uint32(*p)
-	bound := (d.nrange >> 11) * val
-	if d.code < bound {
-		d.nrange = bound
-		*p = prob(val + (2048-val)>>5)
-		if d.nrange < (1 << 24) {
-			d.nrange <<= 8
-			if d.pos < d.limit {
-				d.code = (d.code << 8) | uint32(d.buf[d.pos])
-				d.pos++
-			} else {
-				d.updateCodeSlow()
-			}
-		}
-		return 0
-	}
-	d.code -= bound
-	d.nrange -= bound
-	*p = prob(val - (val >> 5))
-	if d.nrange < (1 << 24) {
-		d.nrange <<= 8
-		if d.pos < d.limit {
-			d.code = (d.code << 8) | uint32(d.buf[d.pos])
-			d.pos++
-		} else {
-			d.updateCodeSlow()
-		}
-	}
-	return 1
 }
 
 //go:noinline

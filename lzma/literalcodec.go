@@ -83,13 +83,50 @@ func (c *literalCodec) Decode(d *rangeDecoder,
 	probs := c.probs[k : k+0x300]
 	_ = probs[767] // Bounds check elimination hint
 	symbol := uint32(1)
+
+	nrange := d.nrange
+	code := d.code
+	pos := d.pos
+	limit := d.limit
+	buf := &d.buf
+
 	if state >= 7 {
 		m := uint32(match)
 		for {
 			matchBit := (m >> 7) & 1
 			m <<= 1
 			i := ((1 + matchBit) << 8) | symbol
-			bit := d.DecodeBit(&probs[i])
+
+			val := uint32(probs[i])
+			bound := (nrange >> 11) * val
+			var bit uint32
+			if code < bound {
+				nrange = bound
+				probs[i] = prob(val + (2048-val)>>5)
+				bit = 0
+			} else {
+				code -= bound
+				nrange -= bound
+				probs[i] = prob(val - (val >> 5))
+				bit = 1
+			}
+			if nrange < (1 << 24) {
+				nrange <<= 8
+				if pos < limit {
+					code = (code << 8) | uint32(buf[pos])
+					pos++
+				} else {
+					d.nrange = nrange
+					d.code = code
+					d.pos = pos
+					d.updateCodeSlow()
+					nrange = d.nrange
+					code = d.code
+					pos = d.pos
+					limit = d.limit
+				}
+			}
+
 			symbol = (symbol << 1) | bit
 			if matchBit != bit {
 				break
@@ -100,8 +137,40 @@ func (c *literalCodec) Decode(d *rangeDecoder,
 		}
 	}
 	for symbol < 0x100 {
-		symbol = (symbol << 1) | d.DecodeBit(&probs[symbol])
+		val := uint32(probs[symbol])
+		bound := (nrange >> 11) * val
+		var bit uint32
+		if code < bound {
+			nrange = bound
+			probs[symbol] = prob(val + (2048-val)>>5)
+			bit = 0
+		} else {
+			code -= bound
+			nrange -= bound
+			probs[symbol] = prob(val - (val >> 5))
+			bit = 1
+		}
+		if nrange < (1 << 24) {
+			nrange <<= 8
+			if pos < limit {
+				code = (code << 8) | uint32(buf[pos])
+				pos++
+			} else {
+				d.nrange = nrange
+				d.code = code
+				d.pos = pos
+				d.updateCodeSlow()
+				nrange = d.nrange
+				code = d.code
+				pos = d.pos
+				limit = d.limit
+			}
+		}
+		symbol = (symbol << 1) | bit
 	}
+	d.nrange = nrange
+	d.code = code
+	d.pos = pos
 	return byte(symbol - 0x100)
 }
 

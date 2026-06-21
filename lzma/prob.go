@@ -49,5 +49,33 @@ func (p *prob) Encode(e *rangeEncoder, v uint32) error {
 
 // Decode decodes a single bit. Note that the p value will change.
 func (p *prob) Decode(d *rangeDecoder) uint32 {
-	return d.DecodeBit(p)
+	val := uint32(*p)
+	bound := (d.nrange >> 11) * val
+	if d.code < bound {
+		d.nrange = bound
+		*p = prob(val + (2048-val)>>5)
+		if d.nrange < (1 << 24) {
+			d.nrange <<= 8
+			if d.pos < d.limit {
+				d.code = (d.code << 8) | uint32(d.buf[d.pos])
+				d.pos++
+			} else {
+				d.updateCodeSlow()
+			}
+		}
+		return 0
+	}
+	d.code -= bound
+	d.nrange -= bound
+	*p = prob(val - (val >> 5))
+	if d.nrange < (1 << 24) {
+		d.nrange <<= 8
+		if d.pos < d.limit {
+			d.code = (d.code << 8) | uint32(d.buf[d.pos])
+			d.pos++
+		} else {
+			d.updateCodeSlow()
+		}
+	}
+	return 1
 }
