@@ -132,12 +132,13 @@ type rangeDecoder struct {
 	buf    [4096]byte
 	pos    int
 	limit  int
+	err    error
 }
 
 func newRangeDecoder(r io.Reader) (d *rangeDecoder, err error) {
 	d = &rangeDecoder{r: r, nrange: 0xffffffff}
 
-	b, err := d.readByte()
+	b, err := d.readByteSlow()
 	if err != nil {
 		return nil, err
 	}
@@ -146,8 +147,14 @@ func newRangeDecoder(r io.Reader) (d *rangeDecoder, err error) {
 	}
 
 	for i := 0; i < 4; i++ {
-		if err = d.updateCode(); err != nil {
-			return nil, err
+		if d.pos < d.limit {
+			d.code = (d.code << 8) | uint32(d.buf[d.pos])
+			d.pos++
+		} else {
+			d.updateCodeSlow()
+		}
+		if d.err != nil {
+			return nil, d.err
 		}
 	}
 
@@ -158,15 +165,6 @@ func newRangeDecoder(r io.Reader) (d *rangeDecoder, err error) {
 	return d, nil
 }
 
-func (d *rangeDecoder) readByte() (byte, error) {
-	if d.pos < d.limit {
-		b := d.buf[d.pos]
-		d.pos++
-		return b, nil
-	}
-	return d.readByteSlow()
-}
-
 // possiblyAtEnd checks whether the decoder may be at the end of the stream.
 func (d *rangeDecoder) possiblyAtEnd() bool {
 	return d.code == 0
@@ -175,56 +173,91 @@ func (d *rangeDecoder) possiblyAtEnd() bool {
 // DirectDecodeBit decodes a bit with probability 1/2. The return value b will
 // contain the bit at the least-significant position. All other bits will be
 // zero.
-func (d *rangeDecoder) DirectDecodeBit() (b uint32, err error) {
+// DirectDecodeBits decodes multiple bits with probability 1/2.
+func (d *rangeDecoder) DirectDecodeBits(bits int) uint32 {
+	var v uint32
+	for i := 0; i < bits; i++ {
+		d.nrange >>= 1
+		d.code -= d.nrange
+		t := 0 - (d.code >> 31)
+		d.code += d.nrange & t
+		v = (v << 1) | ((t + 1) & 1)
+
+		if d.nrange < (1 << 24) {
+			d.nrange <<= 8
+			if d.pos < d.limit {
+				d.code = (d.code << 8) | uint32(d.buf[d.pos])
+				d.pos++
+			} else {
+				d.updateCodeSlow()
+			}
+		}
+	}
+	return v
+}
+
+func (d *rangeDecoder) DirectDecodeBit() uint32 {
 	d.nrange >>= 1
 	d.code -= d.nrange
 	t := 0 - (d.code >> 31)
 	d.code += d.nrange & t
-	b = (t + 1) & 1
-
-	if d.nrange >= (1 << 24) {
-		return b, nil
-	}
-	d.nrange <<= 8
-	return b, d.updateCode()
-}
-
-// DecodeBit decodes a single bit. The bit will be returned at the
-// least-significant position. All other bits will be zero. The probability
-// value will be updated.
-func (d *rangeDecoder) DecodeBit(p *prob) (b uint32, err error) {
-	bound := (d.nrange >> probbits) * uint32(*p)
-	if d.code < bound {
-		d.nrange = bound
-		*p += ((1 << probbits) - *p) >> movebits
-		b = 0
-	} else {
-		d.code -= bound
-		d.nrange -= bound
-		*p -= *p >> movebits
-		b = 1
-	}
-	if d.nrange >= (1 << 24) {
-		return b, nil
-	}
-	d.nrange <<= 8
-	return b, d.updateCode()
-}
-
-func (d *rangeDecoder) updateCode() error {
-	var b byte
-	var err error
-	if d.pos < d.limit {
-		b = d.buf[d.pos]
-		d.pos++
-	} else {
-		b, err = d.readByteSlow()
-		if err != nil {
-			return err
+	if d.nrange < (1 << 24) {
+		d.nrange <<= 8
+		if d.pos < d.limit {
+			d.code = (d.code << 8) | uint32(d.buf[d.pos])
+			d.pos++
+		} else {
+			d.updateCodeSlow()
 		}
 	}
+	return (t + 1) & 1
+}
+
+func (d *rangeDecoder) DecodeBit(p *prob) uint32 {
+	val := uint32(*p)
+	bound := (d.nrange >> 11) * val
+	if d.code < bound {
+		d.nrange = bound
+		*p = prob(val + (2048-val)>>5)
+		if d.nrange < (1 << 24) {
+			d.nrange <<= 8
+			if d.pos < d.limit {
+				d.code = (d.code << 8) | uint32(d.buf[d.pos])
+				d.pos++
+			} else {
+				d.updateCodeSlow()
+			}
+		}
+		return 0
+	}
+	d.code -= bound
+	d.nrange -= bound
+	*p = prob(val - (val >> 5))
+	if d.nrange < (1 << 24) {
+		d.nrange <<= 8
+		if d.pos < d.limit {
+			d.code = (d.code << 8) | uint32(d.buf[d.pos])
+			d.pos++
+		} else {
+			d.updateCodeSlow()
+		}
+	}
+	return 1
+}
+
+//go:noinline
+func (d *rangeDecoder) updateCodeSlow() {
+	if d.err != nil {
+		d.code <<= 8
+		return
+	}
+	b, err := d.readByteSlow()
+	if err != nil {
+		d.err = err
+		d.code <<= 8
+		return
+	}
 	d.code = (d.code << 8) | uint32(b)
-	return nil
 }
 
 func (d *rangeDecoder) readByteSlow() (byte, error) {

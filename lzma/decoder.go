@@ -66,9 +66,12 @@ func (d *decoder) Reopen(r io.Reader, size int64) error {
 func (d *decoder) decodeLiteral() error {
 	litState := d.State.litState(d.Dict.byteAt(1), d.Dict.head)
 	match := d.Dict.byteAt(int(d.State.rep[0]) + 1)
-	s, err := d.State.litCodec.Decode(d.rd, d.State.state, match, litState)
-	if err != nil {
-		return err
+	s := d.State.litCodec.Decode(d.rd, d.State.state, match, litState)
+	if d.rd.err != nil {
+		if d.rd.err == io.EOF {
+			return io.ErrUnexpectedEOF
+		}
+		return d.rd.err
 	}
 	return d.Dict.WriteByte(s)
 }
@@ -82,10 +85,7 @@ func (d *decoder) processNextOp() error {
 
 	state, state2, posState := d.State.states(d.Dict.head)
 
-	b, err := d.State.isMatch[state2].Decode(d.rd)
-	if err != nil {
-		return err
-	}
+	b := d.State.isMatch[state2].Decode(d.rd)
 	if b == 0 {
 		err := d.decodeLiteral()
 		if err != nil {
@@ -94,22 +94,19 @@ func (d *decoder) processNextOp() error {
 		d.State.updateStateLiteral()
 		return nil
 	}
-	b, err = d.State.isRep[state].Decode(d.rd)
-	if err != nil {
-		return err
-	}
+	b = d.State.isRep[state].Decode(d.rd)
 	if b == 0 {
 		d.State.rep[3], d.State.rep[2], d.State.rep[1] =
 			d.State.rep[2], d.State.rep[1], d.State.rep[0]
 
 		d.State.updateStateMatch()
-		n, err := d.State.lenCodec.Decode(d.rd, posState)
-		if err != nil {
-			return err
-		}
-		d.State.rep[0], err = d.State.distCodec.Decode(d.rd, n)
-		if err != nil {
-			return err
+		n := d.State.lenCodec.Decode(d.rd, posState)
+		d.State.rep[0] = d.State.distCodec.Decode(d.rd, n)
+		if d.rd.err != nil {
+			if d.rd.err == io.EOF {
+				return io.ErrUnexpectedEOF
+			}
+			return d.rd.err
 		}
 		if d.State.rep[0] == eosDist {
 			d.eosMarker = true
@@ -117,32 +114,26 @@ func (d *decoder) processNextOp() error {
 		}
 		return d.Dict.writeMatch(int64(d.State.rep[0])+minDistance, int(n)+minMatchLen)
 	}
-	b, err = d.State.isRepG0[state].Decode(d.rd)
-	if err != nil {
-		return err
-	}
+	b = d.State.isRepG0[state].Decode(d.rd)
 	dist := d.State.rep[0]
 	if b == 0 {
-		b, err = d.State.isRepG0Long[state2].Decode(d.rd)
-		if err != nil {
-			return err
-		}
+		b = d.State.isRepG0Long[state2].Decode(d.rd)
 		if b == 0 {
 			d.State.updateStateShortRep()
+			if d.rd.err != nil {
+				if d.rd.err == io.EOF {
+					return io.ErrUnexpectedEOF
+				}
+				return d.rd.err
+			}
 			return d.Dict.writeMatch(int64(dist)+minDistance, 1)
 		}
 	} else {
-		b, err = d.State.isRepG1[state].Decode(d.rd)
-		if err != nil {
-			return err
-		}
+		b = d.State.isRepG1[state].Decode(d.rd)
 		if b == 0 {
 			dist = d.State.rep[1]
 		} else {
-			b, err = d.State.isRepG2[state].Decode(d.rd)
-			if err != nil {
-				return err
-			}
+			b = d.State.isRepG2[state].Decode(d.rd)
 			if b == 0 {
 				dist = d.State.rep[2]
 			} else {
@@ -154,9 +145,12 @@ func (d *decoder) processNextOp() error {
 		d.State.rep[1] = d.State.rep[0]
 		d.State.rep[0] = dist
 	}
-	n, err := d.State.repLenCodec.Decode(d.rd, posState)
-	if err != nil {
-		return err
+	n := d.State.repLenCodec.Decode(d.rd, posState)
+	if d.rd.err != nil {
+		if d.rd.err == io.EOF {
+			return io.ErrUnexpectedEOF
+		}
+		return d.rd.err
 	}
 	d.State.updateStateRep()
 	return d.Dict.writeMatch(int64(dist)+minDistance, int(n)+minMatchLen)

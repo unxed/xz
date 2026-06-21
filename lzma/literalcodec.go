@@ -78,7 +78,7 @@ func (c *literalCodec) Encode(e *rangeEncoder, s byte,
 // state, a match byte, and the literal state.
 func (c *literalCodec) Decode(d *rangeDecoder,
 	state uint32, match byte, litState uint32,
-) (s byte, err error) {
+) byte {
 	k := litState * 0x300
 	probs := c.probs[k : k+0x300]
 	_ = probs[767] // Bounds check elimination hint
@@ -89,10 +89,7 @@ func (c *literalCodec) Decode(d *rangeDecoder,
 			matchBit := (m >> 7) & 1
 			m <<= 1
 			i := ((1 + matchBit) << 8) | symbol
-			bit, err := d.DecodeBit(&probs[i])
-			if err != nil {
-				return 0, err
-			}
+			bit := d.DecodeBit(&probs[i])
 			symbol = (symbol << 1) | bit
 			if matchBit != bit {
 				break
@@ -103,14 +100,9 @@ func (c *literalCodec) Decode(d *rangeDecoder,
 		}
 	}
 	for symbol < 0x100 {
-		bit, err := d.DecodeBit(&probs[symbol])
-		if err != nil {
-			return 0, err
-		}
-		symbol = (symbol << 1) | bit
+		symbol = (symbol << 1) | d.DecodeBit(&probs[symbol])
 	}
-	s = byte(symbol - 0x100)
-	return s, nil
+	return byte(symbol - 0x100)
 }
 
 // minLC and maxLC define the range for LC values.

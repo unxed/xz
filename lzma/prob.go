@@ -48,6 +48,6 @@ func (p *prob) Encode(e *rangeEncoder, v uint32) error {
 }
 
 // Decode decodes a single bit. Note that the p value will change.
-func (p *prob) Decode(d *rangeDecoder) (v uint32, err error) {
+func (p *prob) Decode(d *rangeDecoder) uint32 {
 	return d.DecodeBit(p)
 }

@@ -91,25 +91,12 @@ func (lc *lengthCodec) Encode(e *rangeEncoder, l uint32, posState uint32,
 
 // Decode reads the length offset. Add minMatchLen to compute the actual length
 // to the length offset l.
-func (lc *lengthCodec) Decode(d *rangeDecoder, posState uint32,
-) (l uint32, err error) {
-	var b uint32
-	if b, err = lc.choice[0].Decode(d); err != nil {
-		return
+func (lc *lengthCodec) Decode(d *rangeDecoder, posState uint32) uint32 {
+	if lc.choice[0].Decode(d) == 0 {
+		return lc.low[posState].Decode(d)
 	}
-	if b == 0 {
-		l, err = lc.low[posState].Decode(d)
-		return
+	if lc.choice[1].Decode(d) == 0 {
+		return lc.mid[posState].Decode(d) + 8
 	}
-	if b, err = lc.choice[1].Decode(d); err != nil {
-		return
-	}
-	if b == 0 {
-		l, err = lc.mid[posState].Decode(d)
-		l += 8
-		return
-	}
-	l, err = lc.high.Decode(d)
-	l += 16
-	return
+	return lc.high.Decode(d) + 16
 }

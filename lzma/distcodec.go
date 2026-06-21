@@ -101,40 +101,27 @@ func (dc *distCodec) Encode(e *rangeEncoder, dist uint32, l uint32) (err error) 
 // Decode decodes the distance offset using the parameter l. The dist value
 // 0xffffffff (eos) indicates the end of the stream. Add one to the distance
 // offset to get the actual match distance.
-func (dc *distCodec) Decode(d *rangeDecoder, l uint32) (dist uint32, err error) {
-	posSlot, err := dc.posSlotCodecs[lenState(l)].Decode(d)
-	if err != nil {
-		return
-	}
+func (dc *distCodec) Decode(d *rangeDecoder, l uint32) uint32 {
+	posSlot := dc.posSlotCodecs[lenState(l)].Decode(d)
 
 	// posSlot equals distance
 	if posSlot < startPosModel {
-		return posSlot, nil
+		return posSlot
 	}
 
 	// posSlot uses the individual models
 	bits := (posSlot >> 1) - 1
-	dist = (2 | (posSlot & 1)) << bits
-	var u uint32
+	dist := (2 | (posSlot & 1)) << bits
 	if posSlot < endPosModel {
 		tc := &dc.posModel[posSlot-startPosModel]
-		if u, err = tc.Decode(d); err != nil {
-			return 0, err
-		}
-		dist += u
-		return dist, nil
+		dist += tc.Decode(d)
+		return dist
 	}
 
 	// posSlots use direct encoding and a single model for the four align
 	// bits.
 	dic := directCodec(bits - alignBits)
-	if u, err = dic.Decode(d); err != nil {
-		return 0, err
-	}
-	dist += u << alignBits
-	if u, err = dc.alignCodec.Decode(d); err != nil {
-		return 0, err
-	}
-	dist += u
-	return dist, nil
+	dist += dic.Decode(d) << alignBits
+	dist += dc.alignCodec.Decode(d)
+	return dist
 }

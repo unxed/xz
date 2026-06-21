@@ -76,7 +76,8 @@ func (d *decoderDict) byteAt(dist int) byte {
 // the dictionary for writing. You need to read from the dictionary
 // first.
 func (d *decoderDict) writeMatch(dist int64, length int) error {
-	if !(0 < dist && dist <= int64(d.dictLen())) {
+	limit := d.dictLen()
+	if !(0 < dist && dist <= int64(limit)) {
 		return errors.New("writeMatch: distance out of range")
 	}
 	if !(0 < length && length <= maxMatchLen) {
@@ -89,20 +90,36 @@ func (d *decoderDict) writeMatch(dist int64, length int) error {
 
 	bufSize := len(d.buf.data)
 	front := d.buf.front
-
 	src := front - int(dist)
 	if src < 0 {
 		src += bufSize
 	}
 
-	for i := 0; i < length; i++ {
-		d.buf.data[front] = d.buf.data[src]
-		front++
-		if front >= bufSize {
+	data := d.buf.data
+	for length > 0 {
+		n := length
+		if front+n > bufSize {
+			n = bufSize - front
+		}
+		if src+n > bufSize {
+			n = bufSize - src
+		}
+
+		if int(dist) >= n {
+			copy(data[front:front+n], data[src:src+n])
+		} else {
+			for i := 0; i < n; i++ {
+				data[front+i] = data[src+i]
+			}
+		}
+
+		length -= n
+		front += n
+		if front == bufSize {
 			front = 0
 		}
-		src++
-		if src >= bufSize {
+		src += n
+		if src == bufSize {
 			src = 0
 		}
 	}
