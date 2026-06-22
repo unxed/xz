@@ -5,12 +5,10 @@ compressed streams. It includes also a gxz command for compressing and
 decompressing data. The package is completely written in Go and doesn't
 have any dependency on any C code.
 
-The package is currently under development. There might be bugs and APIs
-are not considered stable. At this time the package cannot compete with
-the xz tool regarding compression speed and size. The algorithms there
-have been developed over a long time and are highly optimized. However
-there are a number of improvements planned and I'm very optimistic about
-parallel compression and decompression. Stay tuned!
+The package is currently under development and APIs are subject to change. Single-threaded
+decompression performance has been optimized using register caching and manual inlining.
+Additionally, the package supports multi-threaded parallel block decompression and
+provides APIs for block-level random access.
 
 ## Using the API
 
@@ -53,6 +51,78 @@ func main() {
 }
 ```
 
+## Parallel Decompression
+
+For streams containing multiple independent blocks, the package supports concurrent block decompression using a worker pool. This utilizes multiple CPU cores to improve decoding throughput.
+
+To use the parallel reader, the input stream must implement `io.ReaderAt` to facilitate concurrent offset-based reads.
+
+```go
+package main
+
+import (
+    "bytes"
+    "io"
+    "log"
+    "os"
+
+    "github.com/ulikunitz/xz"
+)
+
+func main() {
+    // Read compressed data (must support io.ReaderAt)
+    data, err := os.ReadFile("example.xz")
+    if err != nil {
+        log.Fatal(err)
+    }
+    rAt := bytes.NewReader(data)
+
+    // Create parallel reader
+    cfg := xz.ReaderConfig{}
+    pr, err := cfg.NewParallelReader(rAt, int64(len(data)))
+    if err != nil {
+        log.Fatalf("NewParallelReader error: %s", err)
+    }
+    defer pr.Close()
+
+    // Read decompressed output
+    if _, err = io.Copy(os.Stdout, pr); err != nil {
+        log.Fatalf("io.Copy error: %s", err)
+    }
+}
+```
+
+## Block-Level Random Access
+
+The XZ backward-linked indexes can be parsed to extract block boundaries, enabling direct decompression of individual blocks without sequential reading of the entire file.
+
+```go
+// Parse block boundaries from seekable reader
+blocks, err := xz.ParseBlocks(readerAt, size)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Decompress individual blocks independently
+for _, block := range blocks {
+    // Seek to block start
+    _, err := readerAt.Seek(block.Offset, io.SeekStart)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Initialize standalone block reader
+    br, err := xz.ReaderConfig{}.NewBlockReader(readerAt, block.StreamFlags)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Decompress only this block
+    if _, err = io.Copy(os.Stdout, br); err != nil {
+        log.Fatal(err)
+    }
+}
+```
 ## Documentation
 
 You can find the full documentation at [pkg.go.dev](https://pkg.go.dev/github.com/ulikunitz/xz).
