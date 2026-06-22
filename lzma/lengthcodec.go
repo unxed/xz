@@ -92,11 +92,148 @@ func (lc *lengthCodec) Encode(e *rangeEncoder, l uint32, posState uint32,
 // Decode reads the length offset. Add minMatchLen to compute the actual length
 // to the length offset l.
 func (lc *lengthCodec) Decode(d *rangeDecoder, posState uint32) uint32 {
-	if lc.choice[0].Decode(d) == 0 {
-		return lc.low[posState].Decode(d)
+	nrange := d.nrange
+	code := d.code
+	pos := d.pos
+	limit := d.limit
+	buf := &d.buf
+
+	val := uint32(lc.choice[0])
+	bound := (nrange >> 11) * val
+	var bit0 uint32
+	if code < bound {
+		nrange = bound
+		lc.choice[0] = prob(val + (2048-val)>>5)
+		bit0 = 0
+	} else {
+		code -= bound
+		nrange -= bound
+		lc.choice[0] = prob(val - (val >> 5))
+		bit0 = 1
 	}
-	if lc.choice[1].Decode(d) == 0 {
-		return lc.mid[posState].Decode(d) + 8
+	if nrange < (1 << 24) {
+		nrange <<= 8
+		if pos < limit {
+			code = (code << 8) | uint32(buf[pos])
+			pos++
+		} else {
+			d.nrange = nrange; d.code = code; d.pos = pos; d.updateCodeSlow()
+			nrange = d.nrange; code = d.code; pos = d.pos; limit = d.limit
+		}
 	}
-	return lc.high.Decode(d) + 16
+
+	if bit0 == 0 {
+		m := uint32(1)
+		probs := lc.low[posState].probs
+		for j := 0; j < 3; j++ {
+			val := uint32(probs[m])
+			bound := (nrange >> 11) * val
+			if code < bound {
+				nrange = bound
+				probs[m] = prob(val + (2048-val)>>5)
+				m <<= 1
+			} else {
+				code -= bound
+				nrange -= bound
+				probs[m] = prob(val - (val >> 5))
+				m = (m << 1) | 1
+			}
+			if nrange < (1 << 24) {
+				nrange <<= 8
+				if pos < limit {
+					code = (code << 8) | uint32(buf[pos])
+					pos++
+				} else {
+					d.nrange = nrange; d.code = code; d.pos = pos; d.updateCodeSlow()
+					nrange = d.nrange; code = d.code; pos = d.pos; limit = d.limit
+				}
+			}
+		}
+		d.nrange = nrange; d.code = code; d.pos = pos
+		return m - 8
+	}
+
+	val = uint32(lc.choice[1])
+	bound = (nrange >> 11) * val
+	var bit1 uint32
+	if code < bound {
+		nrange = bound
+		lc.choice[1] = prob(val + (2048-val)>>5)
+		bit1 = 0
+	} else {
+		code -= bound
+		nrange -= bound
+		lc.choice[1] = prob(val - (val >> 5))
+		bit1 = 1
+	}
+	if nrange < (1 << 24) {
+		nrange <<= 8
+		if pos < limit {
+			code = (code << 8) | uint32(buf[pos])
+			pos++
+		} else {
+			d.nrange = nrange; d.code = code; d.pos = pos; d.updateCodeSlow()
+			nrange = d.nrange; code = d.code; pos = d.pos; limit = d.limit
+		}
+	}
+
+	if bit1 == 0 {
+		m := uint32(1)
+		probs := lc.mid[posState].probs
+		for j := 0; j < 3; j++ {
+			val := uint32(probs[m])
+			bound := (nrange >> 11) * val
+			if code < bound {
+				nrange = bound
+				probs[m] = prob(val + (2048-val)>>5)
+				m <<= 1
+			} else {
+				code -= bound
+				nrange -= bound
+				probs[m] = prob(val - (val >> 5))
+				m = (m << 1) | 1
+			}
+			if nrange < (1 << 24) {
+				nrange <<= 8
+				if pos < limit {
+					code = (code << 8) | uint32(buf[pos])
+					pos++
+				} else {
+					d.nrange = nrange; d.code = code; d.pos = pos; d.updateCodeSlow()
+					nrange = d.nrange; code = d.code; pos = d.pos; limit = d.limit
+				}
+			}
+		}
+		d.nrange = nrange; d.code = code; d.pos = pos
+		return m - 8 + 8
+	}
+
+	m := uint32(1)
+	probs := lc.high.probs
+	for j := 0; j < 8; j++ {
+		val := uint32(probs[m])
+		bound := (nrange >> 11) * val
+		if code < bound {
+			nrange = bound
+			probs[m] = prob(val + (2048-val)>>5)
+			m <<= 1
+		} else {
+			code -= bound
+			nrange -= bound
+			probs[m] = prob(val - (val >> 5))
+			m = (m << 1) | 1
+		}
+		if nrange < (1 << 24) {
+			nrange <<= 8
+			if pos < limit {
+				code = (code << 8) | uint32(buf[pos])
+				pos++
+			} else {
+				d.nrange = nrange; d.code = code; d.pos = pos; d.updateCodeSlow()
+				nrange = d.nrange; code = d.code; pos = d.pos; limit = d.limit
+			}
+		}
+	}
+	d.nrange = nrange; d.code = code; d.pos = pos
+	return m - 256 + 16
 }

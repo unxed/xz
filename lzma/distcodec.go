@@ -102,26 +102,138 @@ func (dc *distCodec) Encode(e *rangeEncoder, dist uint32, l uint32) (err error) 
 // 0xffffffff (eos) indicates the end of the stream. Add one to the distance
 // offset to get the actual match distance.
 func (dc *distCodec) Decode(d *rangeDecoder, l uint32) uint32 {
-	posSlot := dc.posSlotCodecs[lenState(l)].Decode(d)
+	nrange := d.nrange
+	code := d.code
+	pos := d.pos
+	limit := d.limit
+	buf := &d.buf
 
-	// posSlot equals distance
+	m := uint32(1)
+	probs := dc.posSlotCodecs[lenState(l)].probs
+	for j := 0; j < 6; j++ {
+		val := uint32(probs[m])
+		bound := (nrange >> 11) * val
+		if code < bound {
+			nrange = bound
+			probs[m] = prob(val + (2048-val)>>5)
+			m <<= 1
+		} else {
+			code -= bound
+			nrange -= bound
+			probs[m] = prob(val - (val >> 5))
+			m = (m << 1) | 1
+		}
+		if nrange < (1 << 24) {
+			nrange <<= 8
+			if pos < limit {
+				code = (code << 8) | uint32(buf[pos])
+				pos++
+			} else {
+				d.nrange = nrange; d.code = code; d.pos = pos; d.updateCodeSlow()
+				nrange = d.nrange; code = d.code; pos = d.pos; limit = d.limit
+			}
+		}
+	}
+	posSlot := m - 64
+
 	if posSlot < startPosModel {
+		d.nrange = nrange; d.code = code; d.pos = pos
 		return posSlot
 	}
 
-	// posSlot uses the individual models
 	bits := (posSlot >> 1) - 1
 	dist := (2 | (posSlot & 1)) << bits
+
 	if posSlot < endPosModel {
-		tc := &dc.posModel[posSlot-startPosModel]
-		dist += tc.Decode(d)
+		probs = dc.posModel[posSlot-startPosModel].probs
+		m = 1
+		var v uint32
+		for j := uint32(0); j < bits; j++ {
+			val := uint32(probs[m])
+			bound := (nrange >> 11) * val
+			var bit uint32
+			if code < bound {
+				nrange = bound
+				probs[m] = prob(val + (2048-val)>>5)
+				bit = 0
+			} else {
+				code -= bound
+				nrange -= bound
+				probs[m] = prob(val - (val >> 5))
+				bit = 1
+			}
+			if nrange < (1 << 24) {
+				nrange <<= 8
+				if pos < limit {
+					code = (code << 8) | uint32(buf[pos])
+					pos++
+				} else {
+					d.nrange = nrange; d.code = code; d.pos = pos; d.updateCodeSlow()
+					nrange = d.nrange; code = d.code; pos = d.pos; limit = d.limit
+				}
+			}
+			m = (m << 1) | bit
+			v |= bit << j
+		}
+		dist += v
+		d.nrange = nrange; d.code = code; d.pos = pos
 		return dist
 	}
 
-	// posSlots use direct encoding and a single model for the four align
-	// bits.
-	dic := directCodec(bits - alignBits)
-	dist += dic.Decode(d) << alignBits
-	dist += dc.alignCodec.Decode(d)
+	directBits := bits - alignBits
+	var v uint32
+	for j := uint32(0); j < directBits; j++ {
+		nrange >>= 1
+		code -= nrange
+		t := 0 - (code >> 31)
+		code += nrange & t
+		v = (v << 1) | ((t + 1) & 1)
+
+		if nrange < (1 << 24) {
+			nrange <<= 8
+			if pos < limit {
+				code = (code << 8) | uint32(buf[pos])
+				pos++
+			} else {
+				d.nrange = nrange; d.code = code; d.pos = pos; d.updateCodeSlow()
+				nrange = d.nrange; code = d.code; pos = d.pos; limit = d.limit
+			}
+		}
+	}
+	dist += v << alignBits
+
+	probs = dc.alignCodec.probs
+	m = 1
+	v = 0
+	for j := uint32(0); j < alignBits; j++ {
+		val := uint32(probs[m])
+		bound := (nrange >> 11) * val
+		var bit uint32
+		if code < bound {
+			nrange = bound
+			probs[m] = prob(val + (2048-val)>>5)
+			bit = 0
+		} else {
+			code -= bound
+			nrange -= bound
+			probs[m] = prob(val - (val >> 5))
+			bit = 1
+		}
+		if nrange < (1 << 24) {
+			nrange <<= 8
+			if pos < limit {
+				code = (code << 8) | uint32(buf[pos])
+				pos++
+			} else {
+				d.nrange = nrange; d.code = code; d.pos = pos; d.updateCodeSlow()
+				nrange = d.nrange; code = d.code; pos = d.pos; limit = d.limit
+			}
+		}
+		m = (m << 1) | bit
+		v |= bit << j
+	}
+	dist += v
+
+	d.nrange = nrange; d.code = code; d.pos = pos
 	return dist
 }

@@ -82,11 +82,41 @@ var errEOS = errors.New("EOS marker found")
 // processNextOp decodes the next operation from the compressed stream and applies it directly.
 func (d *decoder) processNextOp() error {
 	const eosDist = 1<<32 - 1
-
 	state, state2, posState := d.State.states(d.Dict.head)
 
-	b := d.State.isMatch[state2].Decode(d.rd)
+	nrange := d.rd.nrange
+	code := d.rd.code
+	pos := d.rd.pos
+	limit := d.rd.limit
+	buf := &d.rd.buf
+
+	p := &d.State.isMatch[state2]
+	val := uint32(*p)
+	bound := (nrange >> 11) * val
+	var b uint32
+	if code < bound {
+		nrange = bound
+		*p = prob(val + (2048-val)>>5)
+		b = 0
+	} else {
+		code -= bound
+		nrange -= bound
+		*p = prob(val - (val >> 5))
+		b = 1
+	}
+	if nrange < (1 << 24) {
+		nrange <<= 8
+		if pos < limit {
+			code = (code << 8) | uint32(buf[pos])
+			pos++
+		} else {
+			d.rd.nrange = nrange; d.rd.code = code; d.rd.pos = pos; d.rd.updateCodeSlow()
+			nrange = d.rd.nrange; code = d.rd.code; pos = d.rd.pos; limit = d.rd.limit
+		}
+	}
+
 	if b == 0 {
+		d.rd.nrange = nrange; d.rd.code = code; d.rd.pos = pos
 		err := d.decodeLiteral()
 		if err != nil {
 			return err
@@ -94,12 +124,35 @@ func (d *decoder) processNextOp() error {
 		d.State.updateStateLiteral()
 		return nil
 	}
-	b = d.State.isRep[state].Decode(d.rd)
-	if b == 0 {
-		d.State.rep[3], d.State.rep[2], d.State.rep[1] =
-			d.State.rep[2], d.State.rep[1], d.State.rep[0]
 
+	p = &d.State.isRep[state]
+	val = uint32(*p)
+	bound = (nrange >> 11) * val
+	if code < bound {
+		nrange = bound
+		*p = prob(val + (2048-val)>>5)
+		b = 0
+	} else {
+		code -= bound
+		nrange -= bound
+		*p = prob(val - (val >> 5))
+		b = 1
+	}
+	if nrange < (1 << 24) {
+		nrange <<= 8
+		if pos < limit {
+			code = (code << 8) | uint32(buf[pos])
+			pos++
+		} else {
+			d.rd.nrange = nrange; d.rd.code = code; d.rd.pos = pos; d.rd.updateCodeSlow()
+			nrange = d.rd.nrange; code = d.rd.code; pos = d.rd.pos; limit = d.rd.limit
+		}
+	}
+
+	if b == 0 {
+		d.State.rep[3], d.State.rep[2], d.State.rep[1] = d.State.rep[2], d.State.rep[1], d.State.rep[0]
 		d.State.updateStateMatch()
+		d.rd.nrange = nrange; d.rd.code = code; d.rd.pos = pos
 		n := d.State.lenCodec.Decode(d.rd, posState)
 		d.State.rep[0] = d.State.distCodec.Decode(d.rd, n)
 		if d.rd.err != nil {
@@ -114,12 +167,60 @@ func (d *decoder) processNextOp() error {
 		}
 		return d.Dict.writeMatch(int64(d.State.rep[0])+minDistance, int(n)+minMatchLen)
 	}
-	b = d.State.isRepG0[state].Decode(d.rd)
+
+	p = &d.State.isRepG0[state]
+	val = uint32(*p)
+	bound = (nrange >> 11) * val
+	if code < bound {
+		nrange = bound
+		*p = prob(val + (2048-val)>>5)
+		b = 0
+	} else {
+		code -= bound
+		nrange -= bound
+		*p = prob(val - (val >> 5))
+		b = 1
+	}
+	if nrange < (1 << 24) {
+		nrange <<= 8
+		if pos < limit {
+			code = (code << 8) | uint32(buf[pos])
+			pos++
+		} else {
+			d.rd.nrange = nrange; d.rd.code = code; d.rd.pos = pos; d.rd.updateCodeSlow()
+			nrange = d.rd.nrange; code = d.rd.code; pos = d.rd.pos; limit = d.rd.limit
+		}
+	}
+
 	dist := d.State.rep[0]
 	if b == 0 {
-		b = d.State.isRepG0Long[state2].Decode(d.rd)
+		p = &d.State.isRepG0Long[state2]
+		val = uint32(*p)
+		bound = (nrange >> 11) * val
+		if code < bound {
+			nrange = bound
+			*p = prob(val + (2048-val)>>5)
+			b = 0
+		} else {
+			code -= bound
+			nrange -= bound
+			*p = prob(val - (val >> 5))
+			b = 1
+		}
+		if nrange < (1 << 24) {
+			nrange <<= 8
+			if pos < limit {
+				code = (code << 8) | uint32(buf[pos])
+				pos++
+			} else {
+				d.rd.nrange = nrange; d.rd.code = code; d.rd.pos = pos; d.rd.updateCodeSlow()
+				nrange = d.rd.nrange; code = d.rd.code; pos = d.rd.pos; limit = d.rd.limit
+			}
+		}
+
 		if b == 0 {
 			d.State.updateStateShortRep()
+			d.rd.nrange = nrange; d.rd.code = code; d.rd.pos = pos
 			if d.rd.err != nil {
 				if d.rd.err == io.EOF {
 					return io.ErrUnexpectedEOF
@@ -129,11 +230,57 @@ func (d *decoder) processNextOp() error {
 			return d.Dict.writeMatch(int64(dist)+minDistance, 1)
 		}
 	} else {
-		b = d.State.isRepG1[state].Decode(d.rd)
+		p = &d.State.isRepG1[state]
+		val = uint32(*p)
+		bound = (nrange >> 11) * val
+		if code < bound {
+			nrange = bound
+			*p = prob(val + (2048-val)>>5)
+			b = 0
+		} else {
+			code -= bound
+			nrange -= bound
+			*p = prob(val - (val >> 5))
+			b = 1
+		}
+		if nrange < (1 << 24) {
+			nrange <<= 8
+			if pos < limit {
+				code = (code << 8) | uint32(buf[pos])
+				pos++
+			} else {
+				d.rd.nrange = nrange; d.rd.code = code; d.rd.pos = pos; d.rd.updateCodeSlow()
+				nrange = d.rd.nrange; code = d.rd.code; pos = d.rd.pos; limit = d.rd.limit
+			}
+		}
+
 		if b == 0 {
 			dist = d.State.rep[1]
 		} else {
-			b = d.State.isRepG2[state].Decode(d.rd)
+			p = &d.State.isRepG2[state]
+			val = uint32(*p)
+			bound = (nrange >> 11) * val
+			if code < bound {
+				nrange = bound
+				*p = prob(val + (2048-val)>>5)
+				b = 0
+			} else {
+				code -= bound
+				nrange -= bound
+				*p = prob(val - (val >> 5))
+				b = 1
+			}
+			if nrange < (1 << 24) {
+				nrange <<= 8
+				if pos < limit {
+					code = (code << 8) | uint32(buf[pos])
+					pos++
+				} else {
+					d.rd.nrange = nrange; d.rd.code = code; d.rd.pos = pos; d.rd.updateCodeSlow()
+					nrange = d.rd.nrange; code = d.rd.code; pos = d.rd.pos; limit = d.rd.limit
+				}
+			}
+
 			if b == 0 {
 				dist = d.State.rep[2]
 			} else {
@@ -145,6 +292,8 @@ func (d *decoder) processNextOp() error {
 		d.State.rep[1] = d.State.rep[0]
 		d.State.rep[0] = dist
 	}
+
+	d.rd.nrange = nrange; d.rd.code = code; d.rd.pos = pos
 	n := d.State.repLenCodec.Decode(d.rd, posState)
 	if d.rd.err != nil {
 		if d.rd.err == io.EOF {

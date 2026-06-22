@@ -108,8 +108,15 @@ func (d *decoderDict) writeMatch(dist int64, length int) error {
 		if int(dist) >= n {
 			copy(data[front:front+n], data[src:src+n])
 		} else {
-			for i := 0; i < n; i++ {
-				data[front+i] = data[src+i]
+			copied := int(dist)
+			copy(data[front:front+copied], data[src:src+copied])
+			for copied < n {
+				toCopy := copied
+				if copied+toCopy > n {
+					toCopy = n - copied
+				}
+				copy(data[front+copied:front+copied+toCopy], data[front:front+toCopy])
+				copied += toCopy
 			}
 		}
 
