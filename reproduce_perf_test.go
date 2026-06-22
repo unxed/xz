@@ -14,6 +14,9 @@ import (
 )
 
 func TestReproduceDecompressionSpeed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow decompression speed test in short mode")
+	}
 	// Генерируем 20 МБ реалистичных текстовых данных с использованием встроенного триграммного генератора
 	const size = 20 * 1024 * 1024
 

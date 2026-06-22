@@ -274,6 +274,7 @@ type blockReader struct {
 	n         int64
 	hash      hash.Hash
 	r         io.Reader
+	closer    io.Closer
 }
 
 // newBlockReader creates a new block reader.
@@ -290,6 +291,9 @@ func (c *ReaderConfig) newBlockReader(xz io.Reader, h *blockHeader,
 	fr, err := c.newFilterReader(&br.lxz, h.filters)
 	if err != nil {
 		return nil, err
+	}
+	if cl, ok := fr.(io.Closer); ok {
+		br.closer = cl
 	}
 	if br.hash.Size() != 0 {
 		br.r = io.TeeReader(fr, br.hash)
@@ -321,6 +325,13 @@ func (br *blockReader) unpaddedSize() int64 {
 // record returns the index record for the current block.
 func (br *blockReader) record() record {
 	return record{br.unpaddedSize(), br.uncompressedSize()}
+}
+// Close closes the underlying filter reader, releasing pooled resources.
+func (br *blockReader) Close() error {
+	if br.closer != nil {
+		return br.closer.Close()
+	}
+	return nil
 }
 
 // Read reads data from the block.

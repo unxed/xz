@@ -23,7 +23,9 @@ func prepareBenchData() {
 	data, _ := io.ReadAll(r)
 	benchOriginalSize = int64(len(data))
 	var buf bytes.Buffer
-	w, _ := xz.NewWriter(&buf)
+	// Create multi-block file (1MB blocks) to allow parallel decompression
+	cfg := xz.WriterConfig{BlockSize: 1024 * 1024}
+	w, _ := cfg.NewWriter(&buf)
 	w.Write(data)
 	w.Close()
 	benchCompressedData = buf.Bytes()
@@ -39,5 +41,22 @@ func BenchmarkDecompressionSpeed(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		zr, _ := xz.NewReader(bytes.NewReader(benchCompressedData))
 		io.Copy(io.Discard, zr)
+	}
+}
+func BenchmarkParallelDecompressionSpeed(b *testing.B) {
+	benchDataOnce.Do(prepareBenchData)
+
+	b.ReportAllocs()
+	b.SetBytes(benchOriginalSize)
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		rAt := bytes.NewReader(benchCompressedData)
+		pr, err := xz.ReaderConfig{}.NewParallelReader(rAt, int64(len(benchCompressedData)))
+		if err != nil {
+			b.Fatalf("NewParallelReader failed: %v", err)
+		}
+		io.Copy(io.Discard, pr)
+		pr.Close()
 	}
 }

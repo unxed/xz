@@ -163,6 +163,14 @@ func (r *Reader2) Read(p []byte) (n int, err error) {
 func (r *Reader2) EOS() bool {
 	return r.cstate == stop
 }
+// Close closes the reader and releases the dictionary buffer back to the pool.
+func (r *Reader2) Close() error {
+	if r.dict != nil {
+		r.dict.Close()
+		r.dict = nil
+	}
+	return nil
+}
 
 // uncompressedReader is used to read uncompressed chunks.
 type uncompressedReader struct {

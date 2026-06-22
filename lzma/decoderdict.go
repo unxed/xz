@@ -6,7 +6,14 @@ package lzma
 
 import (
 	"errors"
+	"sync"
 )
+
+var dictPool = sync.Pool{
+	New: func() interface{} {
+		return nil
+	},
+}
 
 // decoderDict provides the dictionary for the decoder. The whole
 // dictionary is used as reader buffer.
@@ -22,7 +29,17 @@ func newDecoderDict(dictCap int) (d *decoderDict, err error) {
 	if !(1 <= dictCap && int64(dictCap) <= MaxDictCap) {
 		return nil, errors.New("lzma: dictCap out of range")
 	}
-	d = &decoderDict{buf: *newBuffer(dictCap)}
+	var data []byte
+	if v := dictPool.Get(); v != nil {
+		bufSlice := v.([]byte)
+		if len(bufSlice) >= dictCap+1 {
+			data = bufSlice[:dictCap+1]
+		}
+	}
+	if data == nil {
+		data = make([]byte, dictCap+1)
+	}
+	d = &decoderDict{buf: buffer{data: data}}
 	return d, nil
 }
 
@@ -148,3 +165,10 @@ func (d *decoderDict) Available() int { return d.buf.Available() }
 
 // Read reads data from the buffer contained in the decoder dictionary.
 func (d *decoderDict) Read(p []byte) (n int, err error) { return d.buf.Read(p) }
+// Close releases the dictionary buffer to the pool.
+func (d *decoderDict) Close() {
+	if d.buf.data != nil {
+		dictPool.Put(d.buf.data)
+		d.buf.data = nil
+	}
+}
