@@ -1,3 +1,3 @@
-module github.com/unxed/xz
+module github.com/ulikunitz/xz
 
 go 1.20

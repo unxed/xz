@@ -73,7 +73,7 @@
 * Write release notes in doc/relnotes.
 * Update README.md
 * xb copyright . in xz directory to ensure all new files have Copyright header
-* `VERSION=<version> go generate github.com/unxed/xz/...` to update version files
+* `VERSION=<version> go generate github.com/ulikunitz/xz/...` to update version files
 * Execute [test for Linux/amd64, Linux/x86 and Windows/amd64](.github/workflows/go-test-platforms.yml).
 * Update TODO.md - write short log entry
 * `git checkout master && git merge dev`
@@ -106,7 +106,7 @@ Matt Dantay (@bodgit) reported an issue with the LZMA reader. The implementation
 returned an error if the dictionary size was less than 4096 byte, but the
 recommendation stated the actual used window size should be set to 4096 byte in
 that case. It actually was the pull request
-[#52](https://github.com/unxed/xz/pull/52). The new patch v0.5.11 will fix
+[#52](https://github.com/ulikunitz/xz/pull/52). The new patch v0.5.11 will fix
 it.
 
 ### 2021-02-02
@@ -142,12 +142,12 @@ const (
 ### 2020-08-19
 
 Release v0.5.8 fixes issue
-[issue #35](https://github.com/unxed/xz/issues/35).
+[issue #35](https://github.com/ulikunitz/xz/issues/35).
 
 ### 2020-02-24
 
 Release v0.5.7 supports the check-ID None and fixes
-[issue #27](https://github.com/unxed/xz/issues/27).
+[issue #27](https://github.com/ulikunitz/xz/issues/27).
 
 ### 2019-02-20
 

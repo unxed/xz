@@ -10,7 +10,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/unxed/xz"
+	"github.com/ulikunitz/xz"
 )
 
 func TestParallelReader_Correctness(t *testing.T) {

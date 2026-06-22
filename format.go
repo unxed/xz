@@ -13,7 +13,7 @@ import (
 	"hash/crc32"
 	"io"
 
-	"github.com/unxed/xz/lzma"
+	"github.com/ulikunitz/xz/lzma"
 )
 
 // allZeros checks whether a given byte slice has only zeros.
@@ -416,8 +416,8 @@ func (h *blockHeader) UnmarshalBinary(data []byte) error {
 	k := r.Len()
 	// The standard spec says that the padding should have not more
 	// than 3 bytes. However we found paddings of 4 or 5 in the
-	// wild. See https://github.com/unxed/xz/pull/11 and
-	// https://github.com/unxed/xz/issues/15
+	// wild. See https://github.com/ulikunitz/xz/pull/11 and
+	// https://github.com/ulikunitz/xz/issues/15
 	//
 	// The only reasonable approach seems to be to ignore the
 	// padding size. We still check that all padding bytes are zero.

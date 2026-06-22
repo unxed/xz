@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/unxed/xz/internal/randtxt"
+	"github.com/ulikunitz/xz/internal/randtxt"
 )
 
 func TestWriter2(t *testing.T) {
