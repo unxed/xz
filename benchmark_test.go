@@ -7,8 +7,8 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/ulikunitz/xz"
-	"github.com/ulikunitz/xz/internal/randtxt"
+	"github.com/unxed/xz"
+	"github.com/unxed/xz/internal/randtxt"
 )
 
 var (

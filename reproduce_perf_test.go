@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"math/rand"
-	"github.com/ulikunitz/xz/internal/randtxt"
+	"github.com/unxed/xz/internal/randtxt"
 
-	"github.com/ulikunitz/xz"
+	"github.com/unxed/xz"
 )
 
 func TestReproduceDecompressionSpeed(t *testing.T) {

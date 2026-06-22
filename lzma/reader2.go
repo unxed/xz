@@ -8,7 +8,7 @@ import (
 	"errors"
 	"io"
 
-	"github.com/ulikunitz/xz/internal/xlog"
+	"github.com/unxed/xz/internal/xlog"
 )
 
 // Reader2Config stores the parameters for the LZMA2 reader.

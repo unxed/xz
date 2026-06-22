@@ -25,7 +25,7 @@ xb is a supporting building tool from the xz project for Go.
   xb copyright    -- adds copyright statements to relevant files
   xb version      -- prints version information for xb
 
-Report bugs using <https://github.com/ulikunitz/xz/issues>.
+Report bugs using <https://github.com/unxed/xz/issues>.
 `
 
 func updateArgs(cmd string) {

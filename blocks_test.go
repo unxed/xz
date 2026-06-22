@@ -9,7 +9,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/ulikunitz/xz"
+	"github.com/unxed/xz"
 )
 
 func TestBlockLevelDecompression(t *testing.T) {

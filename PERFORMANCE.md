@@ -106,4 +106,4 @@ To reach the target of **80+ MB/s** (matching the 7z.so C++ implementation), we 
 2.  **Worker Pool:** Implement a pre-allocated pool of worker goroutines and a coordination layer (likely using `io.ReaderAt` or a smart chunking buffer) to feed blocks to these workers.
 3.  **Linear Scaling:** Since LZMA decompression is CPU-bound and has minimal shared state between blocks, we expect near-linear scaling with the number of CPU cores.
 
-**Objective:** Transform `ulikunitz/xz` from a single-threaded sequential reader into a modern, multi-core processing engine.
+**Objective:** Transform `unxed/xz` from a single-threaded sequential reader into a modern, multi-core processing engine.

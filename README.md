@@ -23,7 +23,7 @@ import (
     "log"
     "os"
 
-    "github.com/ulikunitz/xz"
+    "github.com/unxed/xz"
 )
 
 func main() {
@@ -66,7 +66,7 @@ import (
     "log"
     "os"
 
-    "github.com/ulikunitz/xz"
+    "github.com/unxed/xz"
 )
 
 func main() {
@@ -125,7 +125,7 @@ for _, block := range blocks {
 ```
 ## Documentation
 
-You can find the full documentation at [pkg.go.dev](https://pkg.go.dev/github.com/ulikunitz/xz).
+You can find the full documentation at [pkg.go.dev](https://pkg.go.dev/github.com/unxed/xz).
 
 ## Using the gxz compression tool
 
@@ -134,7 +134,7 @@ decompression.
 
 Use following command for installation:
 
-    $ go get github.com/ulikunitz/xz/cmd/gxz
+    $ go get github.com/unxed/xz/cmd/gxz
 
 To test it call the following command.
 
@@ -155,4 +155,4 @@ This implementation doesn't share any files with the original xz implementation
 and no patches or pull requests are accepted without a review.
 
 All security advisories for this project are published under
-[github.com/ulikunitz/xz/security/advisories](https://github.com/ulikunitz/xz/security/advisories?state=published).
+[github.com/unxed/xz/security/advisories](https://github.com/unxed/xz/security/advisories?state=published).
