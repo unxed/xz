@@ -7,6 +7,7 @@ package xz_test
 import (
 	"bytes"
 	"io"
+	"os"
 	"testing"
 
 	"github.com/ulikunitz/xz"
@@ -111,5 +112,50 @@ func TestParallelReader_EarlyClose(t *testing.T) {
 	err = pr.Close()
 	if err != nil {
 		t.Fatalf("Close failed: %v", err)
+	}
+}
+func TestParallelReader_AgainstExistingCorpus(t *testing.T) {
+	// Список тестовых файлов, поставляемых с проектом
+	files := []string{
+		"fox.xz",
+		"fox-check-none.xz",
+		"example.xz",
+	}
+
+	for _, file := range files {
+		t.Run(file, func(t *testing.T) {
+			data, err := os.ReadFile(file)
+			if err != nil {
+				t.Fatalf("failed to read test file: %v", err)
+			}
+
+			// 1. Декодируем оригинальным последовательным декодером
+			rSeq, err := xz.NewReader(bytes.NewReader(data))
+			if err != nil {
+				t.Fatalf("NewReader failed: %v", err)
+			}
+			seqDec, err := io.ReadAll(rSeq)
+			if err != nil {
+				t.Fatalf("sequential ReadAll failed: %v", err)
+			}
+
+			// 2. Декодируем новым параллельным декодером
+			rAt := bytes.NewReader(data)
+			pr, err := xz.ReaderConfig{}.NewParallelReader(rAt, int64(len(data)))
+			if err != nil {
+				t.Fatalf("NewParallelReader failed: %v", err)
+			}
+			defer pr.Close()
+
+			parDec, err := io.ReadAll(pr)
+			if err != nil {
+				t.Fatalf("parallel ReadAll failed: %v", err)
+			}
+
+			// 3. Сверяем результаты до последнего байта
+			if !bytes.Equal(seqDec, parDec) {
+				t.Error("decompressed data mismatch between sequential and parallel reader")
+			}
+		})
 	}
 }
