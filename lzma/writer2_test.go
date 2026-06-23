@@ -107,3 +107,71 @@ func TestCycle2(t *testing.T) {
 		t.Fatal("decompressed data differs from original")
 	}
 }
+
+func TestWriter2_ParallelCorrectness(t *testing.T) {
+	// Генерируем 10 МБ реалистичных текстовых данных
+	const size = 10 * 1024 * 1024
+	var srcBuf bytes.Buffer
+	io.CopyN(&srcBuf, randtxt.NewReader(rand.NewSource(42)), size)
+	originalData := srcBuf.Bytes()
+
+	// Хелпер сжатия
+	compress := func(concurrency int) ([]byte, error) {
+		var out bytes.Buffer
+		w, err := Writer2Config{
+			DictCap:     1024 * 1024, // Свап-словарь 1 МБ
+			Concurrency: concurrency,
+		}.NewWriter2(&out)
+		if err != nil {
+			return nil, err
+		}
+		_, err = w.Write(originalData)
+		if err != nil {
+			w.Close()
+			return nil, err
+		}
+		if err := w.Close(); err != nil {
+			return nil, err
+		}
+		return out.Bytes(), nil
+	}
+
+	// Хелпер распаковки
+	decompress := func(compressed []byte) ([]byte, error) {
+		r, err := Reader2Config{DictCap: 1024 * 1024}.NewReader2(bytes.NewReader(compressed))
+		if err != nil {
+			return nil, err
+		}
+		defer r.Close()
+		return io.ReadAll(r)
+	}
+
+	// 1. Тест классического однопоточного кодирования
+	seqCompressed, err := compress(1)
+	if err != nil {
+		t.Fatalf("sequential compression failed: %v", err)
+	}
+	seqDecompressed, err := decompress(seqCompressed)
+	if err != nil {
+		t.Fatalf("sequential decompression failed: %v", err)
+	}
+	if !bytes.Equal(originalData, seqDecompressed) {
+		t.Error("sequential decompressed data mismatch")
+	}
+
+	// 2. Тест нового параллельного кодирования
+	parCompressed, err := compress(4)
+	if err != nil {
+		t.Fatalf("parallel compression failed: %v", err)
+	}
+	parDecompressed, err := decompress(parCompressed)
+	if err != nil {
+		t.Fatalf("parallel decompression failed: %v", err)
+	}
+	if !bytes.Equal(originalData, parDecompressed) {
+		t.Error("parallel decompressed data mismatch")
+	}
+
+	t.Logf("Sequential compressed size: %.2f MB", float64(len(seqCompressed))/(1024*1024))
+	t.Logf("Parallel compressed size:   %.2f MB", float64(len(parCompressed))/(1024*1024))
+}
