@@ -520,3 +520,13 @@ end:
 	}
 	return m
 }
+
+func (t *binTree) Reset() {
+	for i := range t.node {
+		t.node[i] = node{}
+	}
+	t.hoff = -int64(wordLen)
+	t.front = 0
+	t.root = null
+	t.x = 0
+}

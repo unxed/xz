@@ -1,7 +1,3 @@
-// Copyright 2014-2026 Ulrich Kunitz. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
-
 package lzma
 
 import (
@@ -245,6 +241,7 @@ func (w *Writer2) Close() error {
 		if err := w.seqW.Flush(); err != nil {
 			return err
 		}
+		w.seqW.Close()
 	}
 
 	// Write zero byte EOS chunk
@@ -283,24 +280,18 @@ func (w *Writer2) coordinator() {
 func (w *Writer2) worker() {
 	defer w.wg.Done()
 
+	pe, err := getPooledEncoder(w.config)
+	if err != nil {
+		w.setError(err)
+		return
+	}
+	defer putPooledEncoder(pe)
+
 	startState := newState(*w.config.Properties)
 
 	for job := range w.jobs {
 		if w.getError() != nil {
 			job.err = errors.New("lzma: parallel compression aborted")
-			w.outCh <- job
-			continue
-		}
-
-		m, err := w.config.Matcher.new(w.config.DictCap)
-		if err != nil {
-			job.err = err
-			w.outCh <- job
-			continue
-		}
-		d, err := newEncoderDict(w.config.DictCap, w.config.BufSize, m)
-		if err != nil {
-			job.err = err
 			w.outCh <- job
 			continue
 		}
@@ -317,7 +308,8 @@ func (w *Writer2) worker() {
 		seqW.buf.Grow(maxCompressed)
 		seqW.lbw = LimitedByteWriter{BW: &seqW.buf, N: maxCompressed}
 
-		seqW.encoder, err = newEncoder(&seqW.lbw, cloneState(startState), d, 0)
+		pe.d.Reset()
+		seqW.encoder, err = newEncoder(&seqW.lbw, cloneState(startState), pe.d, 0)
 
 		if err == nil {
 			n := 0
@@ -370,6 +362,7 @@ type seqWriter2 struct {
 	ctype   chunkType
 	buf     bytes.Buffer
 	lbw     LimitedByteWriter
+	pe      *pooledEncoder
 }
 
 func newSeqWriter2(lzma2 io.Writer, c Writer2Config) (*seqWriter2, error) {
@@ -381,19 +374,26 @@ func newSeqWriter2(lzma2 io.Writer, c Writer2Config) (*seqWriter2, error) {
 	}
 	w.buf.Grow(maxCompressed)
 	w.lbw = LimitedByteWriter{BW: &w.buf, N: maxCompressed}
-	m, err := c.Matcher.new(c.DictCap)
+
+	pe, err := getPooledEncoder(c)
 	if err != nil {
 		return nil, err
 	}
-	d, err := newEncoderDict(c.DictCap, c.BufSize, m)
+	w.pe = pe
+
+	w.encoder, err = newEncoder(&w.lbw, cloneState(w.start), pe.d, 0)
 	if err != nil {
-		return nil, err
-	}
-	w.encoder, err = newEncoder(&w.lbw, cloneState(w.start), d, 0)
-	if err != nil {
+		putPooledEncoder(pe)
 		return nil, err
 	}
 	return w, nil
+}
+
+func (w *seqWriter2) Close() {
+	if w.pe != nil {
+		putPooledEncoder(w.pe)
+		w.pe = nil
+	}
 }
 
 func (w *seqWriter2) written() int {
@@ -535,4 +535,39 @@ func (w *seqWriter2) Flush() error {
 		}
 	}
 	return nil
+}
+
+// =========================================================================
+// Global Encoder Pooling
+// =========================================================================
+
+type pooledEncoder struct {
+	m matcher
+	d *encoderDict
+}
+
+var encoderPool sync.Pool
+
+func getPooledEncoder(c Writer2Config) (*pooledEncoder, error) {
+	if v := encoderPool.Get(); v != nil {
+		pe := v.(*pooledEncoder)
+		if pe.d.capacity >= c.DictCap {
+			pe.d.Reset()
+			return pe, nil
+		}
+	}
+
+	m, err := c.Matcher.new(c.DictCap)
+	if err != nil {
+		return nil, err
+	}
+	d, err := newEncoderDict(c.DictCap, c.BufSize, m)
+	if err != nil {
+		return nil, err
+	}
+	return &pooledEncoder{m: m, d: d}, nil
+}
+
+func putPooledEncoder(pe *pooledEncoder) {
+	encoderPool.Put(pe)
 }

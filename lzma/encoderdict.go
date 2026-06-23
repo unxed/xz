@@ -16,6 +16,7 @@ type matcher interface {
 	io.Writer
 	SetDict(d *encoderDict)
 	NextOp(rep [4]uint32) operation
+	Reset()
 }
 
 // encoderDict provides the dictionary of the encoder. It includes an
@@ -102,6 +103,12 @@ func (d *encoderDict) Write(p []byte) (n int, err error) {
 
 // Pos returns the position of the head.
 func (d *encoderDict) Pos() int64 { return d.head }
+
+func (d *encoderDict) Reset() {
+	d.buf.Reset()
+	d.head = 0
+	d.m.Reset()
+}
 
 // ByteAt returns the byte at the given distance.
 func (d *encoderDict) ByteAt(distance int) byte {
