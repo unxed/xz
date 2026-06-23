@@ -283,24 +283,22 @@ func (w *Writer2) coordinator() {
 func (w *Writer2) worker() {
 	defer w.wg.Done()
 
+	m, err := w.config.Matcher.new(w.config.DictCap)
+	if err != nil {
+		w.setError(err)
+		return
+	}
+	d, err := newEncoderDict(w.config.DictCap, w.config.BufSize, m)
+	if err != nil {
+		w.setError(err)
+		return
+	}
+
 	startState := newState(*w.config.Properties)
 
 	for job := range w.jobs {
 		if w.getError() != nil {
 			job.err = errors.New("lzma: parallel compression aborted")
-			w.outCh <- job
-			continue
-		}
-
-		m, err := w.config.Matcher.new(w.config.DictCap)
-		if err != nil {
-			job.err = err
-			w.outCh <- job
-			continue
-		}
-		d, err := newEncoderDict(w.config.DictCap, w.config.BufSize, m)
-		if err != nil {
-			job.err = err
 			w.outCh <- job
 			continue
 		}
@@ -317,6 +315,7 @@ func (w *Writer2) worker() {
 		seqW.buf.Grow(maxCompressed)
 		seqW.lbw = LimitedByteWriter{BW: &seqW.buf, N: maxCompressed}
 
+		d.Reset()
 		seqW.encoder, err = newEncoder(&seqW.lbw, cloneState(startState), d, 0)
 
 		if err == nil {

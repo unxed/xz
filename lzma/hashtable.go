@@ -307,3 +307,13 @@ func (t *hashTable) NextOp(rep [4]uint32) operation {
 	}
 	return m
 }
+
+func (t *hashTable) Reset() {
+	for i := range t.t {
+		t.t[i] = 0
+	}
+	t.front = 0
+	t.hoff = -int64(t.wordLen)
+	t.wr = newRoller(t.wordLen)
+	t.hr = newRoller(t.wordLen)
+}
