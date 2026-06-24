@@ -106,12 +106,9 @@ func newHashTable(capacity int, wordLen int) (t *hashTable, err error) {
 func (t *hashTable) SetDict(d *encoderDict) { t.dict = d }
 // Reset clears the hash table and offsets for reuse.
 func (t *hashTable) Reset() {
-	for i := range t.t {
-		t.t[i] = 0
-	}
-	for i := range t.data {
-		t.data[i] = 0
-	}
+	// The arrays t.t and t.data are deliberately NOT zeroed out to save CPU cycles.
+	// Stale indices from previous compression streams are safely rejected by the
+	// mathematical constraints of delta relative offsets (delta < 0) and byte matching.
 	t.front = 0
 	t.hoff = -int64(t.wordLen)
 	t.wr = newRoller(t.wordLen)

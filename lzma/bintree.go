@@ -74,9 +74,9 @@ func newBinTree(capacity int) (t *binTree, err error) {
 func (t *binTree) SetDict(d *encoderDict) { t.dict = d }
 // Reset clears the binary tree nodes and offsets for reuse.
 func (t *binTree) Reset() {
-	for i := range t.node {
-		t.node[i] = node{}
-	}
+	// The node array is deliberately NOT zeroed out to save CPU cycles.
+	// Stale nodes from previous streams are entirely unreachable because the
+	// root is reset to null, creating a new disconnected tree structure.
 	t.hoff = -int64(wordLen)
 	t.front = 0
 	t.root = null
