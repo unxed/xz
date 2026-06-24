@@ -147,3 +147,14 @@ func (d *encoderDict) CopyN(w io.Writer, n int) (written int, err error) {
 
 // Buffered returns the number of bytes in the buffer.
 func (d *encoderDict) Buffered() int { return d.buf.Buffered() }
+
+// Reset clears the dictionary buffer and resets the matcher state.
+func (d *encoderDict) Reset() {
+	d.buf.Reset()
+	d.head = 0
+	if ht, ok := d.m.(*hashTable); ok {
+		ht.Reset()
+	} else if bt, ok := d.m.(*binTree); ok {
+		bt.Reset()
+	}
+}

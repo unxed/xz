@@ -104,6 +104,19 @@ func newHashTable(capacity int, wordLen int) (t *hashTable, err error) {
 }
 
 func (t *hashTable) SetDict(d *encoderDict) { t.dict = d }
+// Reset clears the hash table and offsets for reuse.
+func (t *hashTable) Reset() {
+	for i := range t.t {
+		t.t[i] = 0
+	}
+	for i := range t.data {
+		t.data[i] = 0
+	}
+	t.front = 0
+	t.hoff = -int64(t.wordLen)
+	t.wr = newRoller(t.wordLen)
+	t.hr = newRoller(t.wordLen)
+}
 
 // buffered returns the number of bytes that are currently hashed.
 func (t *hashTable) buffered() int {

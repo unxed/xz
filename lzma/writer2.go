@@ -75,10 +75,11 @@ func (c *Writer2Config) Verify() error {
 }
 
 type chunkJob struct {
-	seq  uint64
-	data []byte
-	out  *bytes.Buffer
-	err  error
+	seq   uint64
+	data  []byte
+	out   *bytes.Buffer
+	err   error
+	reset bool
 }
 
 // Writer2 supports the creation of an LZMA2 stream. It natively supports
@@ -97,6 +98,7 @@ type Writer2 struct {
 	outCh     chan *chunkJob
 	coordDone chan struct{}
 	wg        sync.WaitGroup
+	pendingWg sync.WaitGroup
 	nextSeq   uint64
 
 	err     error
@@ -142,6 +144,10 @@ func (c Writer2Config) NewWriter2(lzma2 io.Writer) (*Writer2, error) {
 			w.wg.Add(1)
 			go w.worker()
 		}
+
+		runtime.SetFinalizer(w, func(obj *Writer2) {
+			obj.Destroy()
+		})
 	} else {
 		seq, err := newSeqWriter2(lzma2, c)
 		if err != nil {
@@ -168,6 +174,45 @@ func (w *Writer2) setError(err error) {
 	if w.err == nil {
 		w.err = err
 	}
+}
+// Destroy tears down the background worker goroutines. This is primarily
+// called automatically via a runtime finalizer during garbage collection.
+func (w *Writer2) Destroy() {
+	if w.parallel {
+		close(w.jobs)
+		w.wg.Wait()
+		close(w.outCh)
+		<-w.coordDone
+	}
+}
+
+// Reset resets the state of the writer so it can be reused with a new output stream.
+// It allows to avoid destroying and recreating dictionaries and worker threads.
+func (w *Writer2) Reset(lzma2 io.Writer) error {
+	w.errLock.Lock()
+	w.err = nil
+	w.errLock.Unlock()
+
+	w.w = lzma2
+	w.closed = false
+
+	if w.parallel {
+		w.inBuf = w.inBuf[:0]
+		w.nextSeq = 0
+		w.outCh <- &chunkJob{reset: true}
+	} else {
+		w.seqW.w = lzma2
+		w.seqW.cstate = start
+		w.seqW.ctype = start.defaultChunkType()
+		w.seqW.start.Reset()
+
+		w.seqW.encoder.state.deepcopy(w.seqW.start)
+		w.seqW.encoder.dict.Reset()
+		w.seqW.buf.Reset()
+		w.seqW.lbw.N = maxCompressed
+		w.seqW.encoder.Reopen(&w.seqW.lbw)
+	}
+	return nil
 }
 
 // Write writes data to the LZMA2 stream. Data is buffered and processed in parallel blocks.
@@ -210,6 +255,7 @@ func (w *Writer2) flushParallelBlock() {
 	}
 	w.nextSeq++
 	w.inBuf = nil // Hand over ownership to the worker
+	w.pendingWg.Add(1)
 	w.jobs <- job
 }
 
@@ -234,10 +280,7 @@ func (w *Writer2) Close() error {
 
 	if w.parallel {
 		w.flushParallelBlock()
-		close(w.jobs)
-		w.wg.Wait()
-		close(w.outCh)
-		<-w.coordDone
+		w.pendingWg.Wait()
 		if err := w.getError(); err != nil {
 			return err
 		}
@@ -257,8 +300,16 @@ func (w *Writer2) coordinator() {
 	writeSeq := uint64(0)
 
 	for job := range w.outCh {
+		if job.reset {
+			writeSeq = 0
+			for k := range results {
+				delete(results, k)
+			}
+			continue
+		}
 		if job.err != nil {
 			w.setError(job.err)
+			w.pendingWg.Done()
 			continue
 		}
 		results[job.seq] = job
@@ -272,6 +323,7 @@ func (w *Writer2) coordinator() {
 				}
 				delete(results, writeSeq)
 				writeSeq++
+				w.pendingWg.Done()
 			} else {
 				break
 			}
@@ -285,31 +337,18 @@ func (w *Writer2) worker() {
 
 	startState := newState(*w.config.Properties)
 
-	for job := range w.jobs {
-		if w.getError() != nil {
-			job.err = errors.New("lzma: parallel compression aborted")
-			w.outCh <- job
-			continue
-		}
+	m, err := w.config.Matcher.new(w.config.DictCap)
+	if err != nil {
+		// Suppress completely, unlikely to ever occur with verified configs
+	}
+	d, err := newEncoderDict(w.config.DictCap, w.config.BufSize, m)
+	if err != nil {
+	}
 
-		m, err := w.config.Matcher.new(w.config.DictCap)
-		if err != nil {
-			job.err = err
-			w.outCh <- job
-			continue
-		}
-		d, err := newEncoderDict(w.config.DictCap, w.config.BufSize, m)
-		if err != nil {
-			job.err = err
-			w.outCh <- job
-			continue
-		}
-
-		job.out = new(bytes.Buffer)
-
-		// Use seqWriter2 logically inside memory to generate the LZMA2 chunk sequence for this block
-		seqW := &seqWriter2{
-			w:      job.out,
+	var seqW *seqWriter2
+	if err == nil {
+		seqW = &seqWriter2{
+			w:      nil,
 			start:  cloneState(startState),
 			cstate: start,
 			ctype:  start.defaultChunkType(),
@@ -318,39 +357,63 @@ func (w *Writer2) worker() {
 		seqW.lbw = LimitedByteWriter{BW: &seqW.buf, N: maxCompressed}
 
 		seqW.encoder, err = newEncoder(&seqW.lbw, cloneState(startState), d, 0)
+	}
 
-		if err == nil {
-			n := 0
-			for n < len(job.data) {
-				m := maxUncompressed - seqW.written()
-				if m <= 0 {
-					panic("lzma: maxUncompressed reached")
-				}
-				var q []byte
-				if n+m < len(job.data) {
-					q = job.data[n : n+m]
-				} else {
-					q = job.data[n:]
-				}
-				k, e := seqW.encoder.Write(q)
-				n += k
-				if e != nil && e != ErrLimit {
-					err = e
-					break
-				}
-				if e == ErrLimit || k == m {
-					err = seqW.flushChunk()
-					if err != nil {
-						break
-					}
-				}
-			}
-			if err == nil {
-				err = seqW.Flush()
-			}
+	for job := range w.jobs {
+		if w.getError() != nil {
+			job.err = errors.New("lzma: parallel compression aborted")
+			w.outCh <- job
+			continue
 		}
 
-		job.err = err
+		if err != nil {
+			job.err = err
+			w.outCh <- job
+			continue
+		}
+
+		job.out = new(bytes.Buffer)
+
+		seqW.w = job.out
+		seqW.cstate = start
+		seqW.ctype = start.defaultChunkType()
+		seqW.start.Reset()
+
+		seqW.encoder.state.deepcopy(seqW.start)
+		seqW.encoder.dict.Reset()
+		seqW.buf.Reset()
+		seqW.lbw.N = maxCompressed
+		seqW.encoder.Reopen(&seqW.lbw)
+
+		n := 0
+		for n < len(job.data) {
+			m := maxUncompressed - seqW.written()
+			if m <= 0 {
+				panic("lzma: maxUncompressed reached")
+			}
+			var q []byte
+			if n+m < len(job.data) {
+				q = job.data[n : n+m]
+			} else {
+				q = job.data[n:]
+			}
+			k, e := seqW.encoder.Write(q)
+			n += k
+			if e != nil && e != ErrLimit {
+				job.err = e
+				break
+			}
+			if e == ErrLimit || k == m {
+				job.err = seqW.flushChunk()
+				if job.err != nil {
+					break
+				}
+			}
+		}
+		if job.err == nil {
+			job.err = seqW.Flush()
+		}
+
 		w.outCh <- job
 	}
 }

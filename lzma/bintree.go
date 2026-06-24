@@ -72,6 +72,16 @@ func newBinTree(capacity int) (t *binTree, err error) {
 }
 
 func (t *binTree) SetDict(d *encoderDict) { t.dict = d }
+// Reset clears the binary tree nodes and offsets for reuse.
+func (t *binTree) Reset() {
+	for i := range t.node {
+		t.node[i] = node{}
+	}
+	t.hoff = -int64(wordLen)
+	t.front = 0
+	t.root = null
+	t.x = 0
+}
 
 // WriteByte writes a single byte into the binary tree.
 func (t *binTree) WriteByte(c byte) error {
