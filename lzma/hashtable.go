@@ -18,7 +18,7 @@ import (
 
 // maxMatches limits the number of matches requested from the Matches
 // function. This controls the speed of the overall encoding.
-const maxMatches = 16
+const maxMatches = 8
 
 // shortDists defines the number of short distances supported by the
 // implementation.
