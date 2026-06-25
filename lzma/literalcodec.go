@@ -89,6 +89,68 @@ func (c *literalCodec) Decode(d *rangeDecoder,
 	pos := d.pos
 	limit := d.limit
 	buf := &d.buf
+	if limit-pos >= 8 {
+		if state >= 7 {
+			m := uint32(match)
+			for {
+				matchBit := (m >> 7) & 1
+				m <<= 1
+				i := ((1 + matchBit) << 8) | symbol
+
+				val := uint32(probs[i])
+				bound := (nrange >> 11) * val
+				var bit uint32
+				if code < bound {
+					nrange = bound
+					probs[i] = prob(val + (2048-val)>>5)
+					bit = 0
+				} else {
+					code -= bound
+					nrange -= bound
+					probs[i] = prob(val - (val >> 5))
+					bit = 1
+				}
+				if nrange < (1 << 24) {
+					nrange <<= 8
+					code = (code << 8) | uint32(buf[pos])
+					pos++
+				}
+
+				symbol = (symbol << 1) | bit
+				if matchBit != bit {
+					break
+				}
+				if symbol >= 0x100 {
+					break
+				}
+			}
+		}
+		for symbol < 0x100 {
+			val := uint32(probs[symbol])
+			bound := (nrange >> 11) * val
+			var bit uint32
+			if code < bound {
+				nrange = bound
+				probs[symbol] = prob(val + (2048-val)>>5)
+				bit = 0
+			} else {
+				code -= bound
+				nrange -= bound
+				probs[symbol] = prob(val - (val >> 5))
+				bit = 1
+			}
+			if nrange < (1 << 24) {
+				nrange <<= 8
+				code = (code << 8) | uint32(buf[pos])
+				pos++
+			}
+			symbol = (symbol << 1) | bit
+		}
+		d.nrange = nrange
+		d.code = code
+		d.pos = pos
+		return byte(symbol - 0x100)
+	}
 
 	if state >= 7 {
 		m := uint32(match)

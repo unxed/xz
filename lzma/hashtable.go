@@ -7,8 +7,6 @@ package lzma
 import (
 	"errors"
 	"fmt"
-
-	"github.com/unxed/xz/internal/hash"
 )
 
 /* For compression we need to find byte sequences that match the byte
@@ -31,9 +29,6 @@ const (
 	maxTableExponent = 20
 )
 
-// newRoller contains the function used to create an instance of the
-// hash.Roller.
-var newRoller = func(n int) hash.Roller { return hash.NewCyclicPoly(n) }
 
 // hashTable stores the hash table including the rolling hash method.
 //
@@ -51,14 +46,8 @@ type hashTable struct {
 	mask uint64
 	// hash offset; initial value is -int64(wordLen)
 	hoff int64
-	// length of the hashed word
 	wordLen int
-	// hash roller for computing the hash values for the Write
-	// method
-	wr hash.Roller
-	// hash roller for computing arbitrary hashes
-	hr hash.Roller
-	// preallocated slices
+	history [4]byte
 	p         [maxMatches]int64
 	distances [maxMatches + shortDists]int
 }
@@ -76,6 +65,46 @@ func hashTableExponent(n uint32) int {
 	return e
 }
 
+var (
+	tPool    = make(chan []int64, 32)
+	dataPool = make(chan []uint32, 32)
+)
+
+func getTSlice(size int) []int64 {
+	select {
+	case s := <-tPool:
+		if cap(s) >= size {
+			return s[:size]
+		}
+	default:
+	}
+	return make([]int64, size)
+}
+
+func putTSlice(s []int64) {
+	select {
+	case tPool <- s:
+	default:
+	}
+}
+
+func getDataSlice(size int) []uint32 {
+	select {
+	case s := <-dataPool:
+		if cap(s) >= size {
+			return s[:size]
+		}
+	default:
+	}
+	return make([]uint32, size)
+}
+
+func putDataSlice(s []uint32) {
+	select {
+	case dataPool <- s:
+	default:
+	}
+}
 // newHashTable creates a new hash table for words of length wordLen
 func newHashTable(capacity int, wordLen int) (t *hashTable, err error) {
 	if !(0 < capacity) {
@@ -92,13 +121,12 @@ func newHashTable(capacity int, wordLen int) (t *hashTable, err error) {
 		panic("newHashTable: exponent is too large")
 	}
 	t = &hashTable{
-		t:       make([]int64, n),
-		data:    make([]uint32, capacity),
+		t:       getTSlice(n),
+		data:    getDataSlice(capacity),
 		mask:    (uint64(1) << uint(exp)) - 1,
 		hoff:    -int64(wordLen),
 		wordLen: wordLen,
-		wr:      newRoller(wordLen),
-		hr:      newRoller(wordLen),
+		history: [4]byte{},
 	}
 	return t, nil
 }
@@ -106,13 +134,9 @@ func newHashTable(capacity int, wordLen int) (t *hashTable, err error) {
 func (t *hashTable) SetDict(d *encoderDict) { t.dict = d }
 // Reset clears the hash table and offsets for reuse.
 func (t *hashTable) Reset() {
-	// The arrays t.t and t.data are deliberately NOT zeroed out to save CPU cycles.
-	// Stale indices from previous compression streams are safely rejected by the
-	// mathematical constraints of delta relative offsets (delta < 0) and byte matching.
 	t.front = 0
 	t.hoff = -int64(t.wordLen)
-	t.wr = newRoller(t.wordLen)
-	t.hr = newRoller(t.wordLen)
+	t.history = [4]byte{}
 }
 
 // buffered returns the number of bytes that are currently hashed.
@@ -166,9 +190,22 @@ func (t *hashTable) putEntry(h uint64, pos int64) {
 // WriteByte converts a single byte into a hash and puts them into the hash
 // table.
 func (t *hashTable) WriteByte(b byte) error {
-	h := t.wr.RollByte(b)
+	for i := 0; i < t.wordLen-1; i++ {
+		t.history[i] = t.history[i+1]
+	}
+	t.history[t.wordLen-1] = b
+
 	t.hoff++
-	t.putEntry(h, t.hoff)
+	if t.hoff < 0 {
+		return nil
+	}
+
+	var h uint32
+	for i := 0; i < t.wordLen; i++ {
+		h = (h << 5) ^ uint32(t.history[i])
+	}
+
+	t.putEntry(uint64(h), t.hoff)
 	return nil
 }
 
@@ -176,10 +213,53 @@ func (t *hashTable) WriteByte(b byte) error {
 // abbreviated offsets into the hash table. The method will never return an
 // error.
 func (t *hashTable) Write(p []byte) (n int, err error) {
+	history := t.history
+	wordLen := t.wordLen
+	hoff := t.hoff
+	front := t.front
+	bufSize := len(t.data)
+	mask := t.mask
+
 	for _, b := range p {
-		// WriteByte doesn't generate an error.
-		t.WriteByte(b)
+		for i := 0; i < wordLen-1; i++ {
+			history[i] = history[i+1]
+		}
+		history[wordLen-1] = b
+
+		hoff++
+		if hoff < 0 {
+			continue
+		}
+
+		var h uint32
+		for i := 0; i < wordLen; i++ {
+			h = (h << 5) ^ uint32(history[i])
+		}
+
+		idx := uint64(h) & mask
+		old := t.t[idx] - 1
+		t.t[idx] = hoff + 1
+		var delta int64
+		if old >= 0 {
+			delta = hoff - old
+			buffered := int(hoff + 1)
+			if buffered > bufSize {
+				buffered = bufSize
+			}
+			if delta > 1<<32-1 || delta > int64(buffered) {
+				delta = 0
+			}
+		}
+		t.data[front] = uint32(delta)
+		front++
+		if front >= bufSize {
+			front = 0
+		}
 	}
+
+	t.history = history
+	t.hoff = hoff
+	t.front = front
 	return len(p), nil
 }
 
@@ -224,11 +304,22 @@ func (t *hashTable) getMatches(h uint64, positions []int64) (n int) {
 // hash computes the rolling hash for the word stored in p. For correct
 // results its length must be equal to t.wordLen.
 func (t *hashTable) hash(p []byte) uint64 {
-	var h uint64
+	var h uint32
 	for _, b := range p {
-		h = t.hr.RollByte(b)
+		h = (h << 5) ^ uint32(b)
 	}
-	return h
+	return uint64(h)
+}
+func (t *hashTable) Close() error {
+	if t.t != nil {
+		putTSlice(t.t)
+		t.t = nil
+	}
+	if t.data != nil {
+		putDataSlice(t.data)
+		t.data = nil
+	}
+	return nil
 }
 
 // Matches fills the positions slice with potential matches. The

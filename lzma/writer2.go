@@ -35,8 +35,9 @@ func (c *Writer2Config) fill() {
 		c.Properties = &Properties{LC: 3, LP: 0, PB: 2}
 	}
 	if c.DictCap == 0 {
-		c.DictCap = 8 * 1024 * 1024
+		c.DictCap = 32 * 1024 * 1024
 	}
+
 	if c.BufSize == 0 {
 		c.BufSize = 4096
 	}
@@ -341,8 +342,10 @@ func (w *Writer2) worker() {
 	if err != nil {
 		// Suppress completely, unlikely to ever occur with verified configs
 	}
+
 	d, err := newEncoderDict(w.config.DictCap, w.config.BufSize, m)
-	if err != nil {
+	if err == nil {
+		defer d.Close()
 	}
 
 	var seqW *seqWriter2

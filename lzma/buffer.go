@@ -5,6 +5,7 @@
 package lzma
 
 import (
+    "io"
 	"errors"
 )
 
@@ -18,9 +19,28 @@ type buffer struct {
 	rear  int
 }
 
+var bufferPool = make(chan []byte, 32)
+
+func getBufferSlice(size int) []byte {
+	select {
+	case s := <-bufferPool:
+		if cap(s) >= size {
+			return s[:size]
+		}
+	default:
+	}
+	return make([]byte, size)
+}
+
+func putBufferSlice(s []byte) {
+	select {
+	case bufferPool <- s:
+	default:
+	}
+}
 // newBuffer creates a buffer with the given size.
 func newBuffer(size int) *buffer {
-	return &buffer{data: make([]byte, size+1)}
+	return &buffer{data: getBufferSlice(size + 1)}
 }
 
 // Cap returns the capacity of the buffer.
@@ -168,4 +188,15 @@ func (b *buffer) matchLen(distance int, p []byte) int {
 	}
 	n += prefixLen(p, b.data[i:])
 	return n
+}
+
+func (d *encoderDict) Close() error {
+	if d.buf.data != nil {
+		putBufferSlice(d.buf.data)
+		d.buf.data = nil
+	}
+	if closer, ok := d.m.(io.Closer); ok {
+		closer.Close()
+	}
+	return nil
 }

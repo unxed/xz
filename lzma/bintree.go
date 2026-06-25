@@ -50,6 +50,25 @@ type binTree struct {
 // reference.
 const null uint32 = 1<<32 - 1
 
+var nodePool = make(chan []node, 32)
+
+func getNodeSlice(size int) []node {
+	select {
+	case s := <-nodePool:
+		if cap(s) >= size {
+			return s[:size]
+		}
+	default:
+	}
+	return make([]node, size)
+}
+
+func putNodeSlice(s []node) {
+	select {
+	case nodePool <- s:
+	default:
+	}
+}
 // newBinTree initializes the binTree structure. The capacity defines
 // the size of the buffer and defines the maximum distance for which
 // matches will be found.
@@ -63,10 +82,10 @@ func newBinTree(capacity int) (t *binTree, err error) {
 			"newBinTree: capacity must less 2^{32}-1")
 	}
 	t = &binTree{
-		node: make([]node, capacity),
+		node: getNodeSlice(capacity),
 		hoff: -int64(wordLen),
 		root: null,
-		data: make([]byte, maxMatchLen),
+		data: getBufferSlice(maxMatchLen),
 	}
 	return t, nil
 }
@@ -82,23 +101,33 @@ func (t *binTree) Reset() {
 	t.root = null
 	t.x = 0
 }
+func (t *binTree) Close() error {
+	if t.node != nil {
+		putNodeSlice(t.node)
+		t.node = nil
+	}
+	if t.data != nil {
+		putBufferSlice(t.data)
+		t.data = nil
+	}
+	return nil
+}
 
 // WriteByte writes a single byte into the binary tree.
 func (t *binTree) WriteByte(c byte) error {
-	t.x = (t.x << 8) | uint32(c)
+	t.x = (t.x << 5) ^ uint32(c)
 	t.hoff++
 	if t.hoff < 0 {
 		return nil
 	}
 	v := t.front
 	if int64(v) < t.hoff {
-		// We are overwriting old nodes stored in the tree.
 		t.remove(v)
 	}
 	t.node[v].x = t.x
 	t.add(v)
 	t.front++
-	if int64(t.front) >= int64(len(t.node)) {
+	if int(t.front) >= len(t.node) {
 		t.front = 0
 	}
 	return nil
@@ -225,28 +254,20 @@ func (t *binTree) remove(v uint32) {
 // the returned node.
 func (t *binTree) search(v uint32, x uint32) (a, b uint32) {
 	a, b = null, null
-	if v == null {
-		return
-	}
-	for {
+	for v != null {
 		vn := &t.node[v]
 		if x <= vn.x {
 			if x == vn.x {
 				return v, v
 			}
 			b = v
-			if vn.l == null {
-				return
-			}
 			v = vn.l
 		} else {
 			a = v
-			if vn.r == null {
-				return
-			}
 			v = vn.r
 		}
 	}
+	return
 }
 
 // max returns the node with maximum value in the subtree with v as
@@ -464,7 +485,6 @@ func (t *binTree) NextOp(rep [4]uint32) operation {
 	var (
 		m                  match
 		x, u, v            uint32
-		iterPred, iterSucc func() (int, bool)
 	)
 	p := matchParams{
 		rep:     rep,
@@ -502,28 +522,74 @@ func (t *binTree) NextOp(rep [4]uint32) operation {
 		goto end
 	}
 	p.stopShorter = true
-	iterSucc = func() (dist int, ok bool) {
-		if v == null {
-			return 0, false
-		}
-		dist = t.distance(v)
+
+	for i := 0; i < p.check && v != null; i++ {
+		dist := t.distance(v)
 		v = t.succ(v)
-		return dist, true
-	}
-	m, checked, accepted = t.match(m, iterSucc, p)
-	if accepted {
-		goto end
-	}
-	p.check -= checked
-	iterPred = func() (dist int, ok bool) {
-		if u == null {
-			return 0, false
+
+		if m.n > 0 {
+			pos := t.dict.buf.rear - dist + m.n - 1
+			if pos < 0 {
+				pos += len(t.dict.buf.data)
+			} else if pos >= len(t.dict.buf.data) {
+				pos -= len(t.dict.buf.data)
+			}
+			if t.dict.buf.data[pos] != t.data[m.n-1] {
+				break
+			}
 		}
-		dist = t.distance(u)
-		u = t.pred(u)
-		return dist, true
+
+		n := t.dict.buf.matchLen(dist, t.data)
+		switch n {
+		case 0:
+			break
+		case 1:
+			if uint32(dist-minDistance) != rep[0] {
+				continue
+			}
+		}
+
+		if n > m.n || (n == m.n && int64(dist) < m.distance) {
+			m = match{int64(dist), n}
+			if n >= p.nAccept {
+				goto end
+			}
+		}
 	}
-	m, _, _ = t.match(m, iterPred, p)
+
+	for i := 0; i < p.check && u != null; i++ {
+		dist := t.distance(u)
+		u = t.pred(u)
+
+		if m.n > 0 {
+			pos := t.dict.buf.rear - dist + m.n - 1
+			if pos < 0 {
+				pos += len(t.dict.buf.data)
+			} else if pos >= len(t.dict.buf.data) {
+				pos -= len(t.dict.buf.data)
+			}
+			if t.dict.buf.data[pos] != t.data[m.n-1] {
+				break
+			}
+		}
+
+		n := t.dict.buf.matchLen(dist, t.data)
+		switch n {
+		case 0:
+			break
+		case 1:
+			if uint32(dist-minDistance) != rep[0] {
+				continue
+			}
+		}
+
+		if n > m.n || (n == m.n && int64(dist) < m.distance) {
+			m = match{int64(dist), n}
+			if n >= p.nAccept {
+				goto end
+			}
+		}
+	}
 end:
 	if m.n == 0 {
 		return lit{t.data[0]}

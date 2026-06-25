@@ -20,7 +20,7 @@ type Reader2Config struct {
 // fill converts the zero values of the configuration to the default values.
 func (c *Reader2Config) fill() {
 	if c.DictCap == 0 {
-		c.DictCap = 8 * 1024 * 1024
+		c.DictCap = 32 * 1024 * 1024
 	}
 }
 
