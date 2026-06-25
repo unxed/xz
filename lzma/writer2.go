@@ -469,74 +469,7 @@ func (w *seqWriter2) written() int {
 	return int(w.encoder.Compressed()) + w.encoder.dict.Buffered()
 }
 
-func isHighlyIncompressible(data []byte) bool {
-	if len(data) < 1024 {
-		return false
-	}
-	step := len(data) / 512
-	duplicates := 0
-	seen := make([]bool, 256)
-	unique := 0
-	for i := 0; i < 512; i++ {
-		b := data[i*step]
-		if !seen[b] {
-			seen[b] = true
-			unique++
-		}
-		if i > 0 && b == data[(i-1)*step] {
-			duplicates++
-		}
-	}
-	return unique > 200 && duplicates < 5
-}
-
-func (w *seqWriter2) writeRawUncompressedChunk(p []byte) error {
-	if len(p) == 0 {
-		return nil
-	}
-	ctype := cUD
-
-	header := chunkHeader{
-		ctype:        ctype,
-		uncompressed: uint32(len(p) - 1),
-	}
-	hdata, err := header.MarshalBinary()
-	if err != nil {
-		return err
-	}
-	if _, err = w.w.Write(hdata); err != nil {
-		return err
-	}
-	if _, err = w.w.Write(p); err != nil {
-		return err
-	}
-	w.encoder.dict.Reset()
-	_, _ = w.encoder.dict.Write(p)
-
-	if err = w.cstate.next(ctype); err != nil {
-		return err
-	}
-	w.ctype = w.cstate.defaultChunkType()
-	w.start = cloneState(w.encoder.state)
-	return nil
-}
-
 func (w *seqWriter2) Write(p []byte) (n int, err error) {
-	if isHighlyIncompressible(p) {
-		for len(p) > 0 {
-			chunkSize := maxUncompressed
-			if len(p) < chunkSize {
-				chunkSize = len(p)
-			}
-			if err = w.writeRawUncompressedChunk(p[:chunkSize]); err != nil {
-				return n, err
-			}
-			n += chunkSize
-			p = p[chunkSize:]
-		}
-		return n, nil
-	}
-
 	for n < len(p) {
 		m := maxUncompressed - w.written()
 		if m <= 0 {
