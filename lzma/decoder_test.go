@@ -57,3 +57,62 @@ func TestDecoder(t *testing.T) {
 		}
 	}
 }
+type chunkReader struct {
+	data []byte
+	pos  int
+	size int
+}
+
+func (c *chunkReader) Read(p []byte) (int, error) {
+	if c.pos >= len(c.data) {
+		return 0, io.EOF
+	}
+	n := len(p)
+	if n > c.size {
+		n = c.size
+	}
+	if c.pos+n > len(c.data) {
+		n = len(c.data) - c.pos
+	}
+	copy(p, c.data[c.pos:c.pos+n])
+	c.pos += n
+	return n, nil
+}
+
+func TestDecoderBCEBoundaries(t *testing.T) {
+	t.Parallel()
+
+	lzmaData, err := os.ReadFile("fox.lzma")
+	if err != nil {
+		t.Fatalf("failed to read fox.lzma: %v", err)
+	}
+
+	expected := "The quick brown fox jumps over the lazy dog.\n"
+
+	for chunkSize := 1; chunkSize <= 64; chunkSize++ {
+		props, err := PropertiesForCode(lzmaData[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		state := newState(props)
+		dict, err := newDecoderDict(MinDictCap)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		cr := &chunkReader{data: lzmaData[HeaderLen:], size: chunkSize}
+		r, err := newDecoder(cr, state, dict, int64(len(expected)))
+		if err != nil {
+			t.Fatalf("newDecoder failed for chunk size %d: %v", chunkSize, err)
+		}
+
+		got, err := io.ReadAll(r)
+		if err != nil {
+			t.Fatalf("failed to decode at chunk size %d: %v", chunkSize, err)
+		}
+
+		if string(got) != expected {
+			t.Errorf("chunk size %d: got %q, want %q", chunkSize, string(got), expected)
+		}
+	}
+}
