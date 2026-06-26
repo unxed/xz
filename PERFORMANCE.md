@@ -82,13 +82,45 @@ This document tracks the attempts to optimize the LZMA decompression speed on Go
 *   **Result:** **32.00 MB/s (NEGLIGIBLE GAIN)**
 *   **Conclusion:** Modern CPU Branch Predictors are so efficient that simple safety checks (`if pos < limit`) are nearly free. The serial data dependency of the Range Decoder is the absolute bottleneck.
 
+## Attempt 8: Allocation & Struct Optimization (The Garbage Collector Wall)
+*   **Changes:**
+    *   Replaced the heavily boxed `operation` interface inside encoder loops with a compact, 16-byte value-struct (`distance int64`, `length int32`, `lit byte`, `typ opType`).
+    *   Optimized `literalCodec.init` and `literalCodec.deepcopy` to reuse slice capacity instead of always allocating on the heap.
+    *   Avoided fresh allocations of `state` during LZMA2 property resets by reusing and resetting the existing instance.
+    *   Introduced `sync.Pool` for concurrent output buffers (`bytes.Buffer`) in parallel encoding.
+*   **Result:** **~34 MB/s (Solid Unpack) / ~92 MB/s (Files Unpack)**. Allocations dropped by **98%** (from 2.1M to 45K allocs/op on Solid Pack).
+*   **Conclusion:** **SUCCESS.** Drastically reduced heap allocations and GC overhead, making the engine much cleaner and more stable.
+
+## Attempt 9: Branchless Range Decoding (Breaking the Branch Predictor)
+*   **Changes:**
+    *   Refactored the range decoder's hot-path loops (`prob.go`, `decoder.go`, `treecodecs.go`, `distcodec.go`, `literalcodec.go`) to use branchless bitwise masking instead of conditional jumps.
+    *   Constructed a sign-extended mask using `uint32((int64(code) - int64(bound)) >> 63)` to completely bypass unpredictable branches (`if code < bound`).
+*   **Result:** **~40 MB/s (Solid Unpack) / ~104 MB/s (Files Unpack)**.
+*   **Conclusion:** **SUCCESS.** Eliminating branch misprediction penalties in the serial bottleneck of range decoding allowed the instruction pipeline to remain saturated.
+
+## Attempt 10: Flat Array Data-Oriented Design (DOD)
+*   **Changes:**
+    *   Flattened nested codec slice structures (`probs []prob` inside `treeCodec` and `literalCodec`) into contiguous flat arrays within `lengthCodec` and `distCodec`.
+    *   Rewrote `state.deepcopy()` as a single block assignment (`*s = *src`) to copy all properties using optimized `memmove`.
+*   **Result:** **~39 MB/s (Solid Unpack) / ~101 MB/s (Files Unpack) (REGRESSION)**
+*   **Status:** **FAILED / ROLLED BACK.**
+*   **Post-Mortem:** Reusing arrays ballooned the `state` struct size to ~28 KB. Copying 28 KB on every chunk/block boundary during parallel compression congested L1 write ports. Furthermore, indexing multidimensional arrays increased "Register Pressure" on Go's SSA backend.
+
+## Attempt 11: Zero-Overhead Dictionary Access
+*   **Changes:**
+    *   Added a specialized `lastByte()` method in `decoderDict` to fetch the last decoded byte without distance checks.
+    *   Optimized `byteAt` by replacing `dictLen()` and capacity method calls with a simple `int64(dist) > d.head` boundary check.
+*   **Result:** **No noticeable change (NO CHANGE)**
+*   **Status:** **FAILED / ROLLED BACK.**
+*   **Post-Mortem:** Modern CPU Out-of-Order Execution engines are so efficient that simple metadata calculations are executed in parallel with the Range Decoder bottleneck, resulting in no measurable speedup.
+
 ---
 
 ## Final Insights: The "Go Compiler Wall"
 1.  **Register Pressure:** Go's SSA backend has a limited number of registers. Adding even a single extra variable or slice header to the hot loop can trigger stack spilling, which is costlier than a bounds check.
-2.  **Computational Limit:** Single-threaded LZMA serial decoding in Go has a practical limit of ~32 MB/s on this hardware.
-3.  **Branch Prediction:** Don't obsess over simple branches (`if pos < limit`); modern CPUs handle them perfectly if they are predictable.
-4.  **The Path to 80 MB/s:** To match C++ performance, we must look beyond serial optimizations and implement **Parallel Block Decompression**, leveraging multiple CPU cores.
+2.  **Computational Limit:** Single-threaded LZMA serial decoding in Go has a practical limit of ~40 MB/s on this hardware.
+3.  **Branch Prediction:** Don't obsess over simple branches; modern CPUs handle them perfectly if they are predictable. However, unpredictable branches in range decoder hot loops should be aggressively eliminated using bitwise masks.
+4.  **The Path to 100+ MB/s:** To match C++ performance, we must look beyond serial optimizations and implement **Parallel Block Decompression**, leveraging multiple CPU cores (already accomplished via `ParallelReader`).
 
 ## Summary of Lessons
 *   **Inlining is king:** Manual inlining provided the biggest leaps (Attempt 2 & 4).
