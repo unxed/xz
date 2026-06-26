@@ -93,17 +93,11 @@ func (d *decoder) processNextOp() error {
 	p := &d.State.isMatch[state2]
 	val := uint32(*p)
 	bound := (nrange >> 11) * val
-	var b uint32
-	if code < bound {
-		nrange = bound
-		*p = prob(val + (2048-val)>>5)
-		b = 0
-	} else {
-		code -= bound
-		nrange -= bound
-		*p = prob(val - (val >> 5))
-		b = 1
-	}
+	mask := uint32((int64(code) - int64(bound)) >> 63)
+	nrange = (bound & mask) | ((nrange - bound) & ^mask)
+	code -= bound & ^mask
+	*p = prob(val + (((2048 - val) >> 5) & mask) - ((val >> 5) & ^mask))
+	b := ^mask & 1
 	if nrange < (1 << 24) {
 		nrange <<= 8
 		if pos < limit {
@@ -128,16 +122,11 @@ func (d *decoder) processNextOp() error {
 	p = &d.State.isRep[state]
 	val = uint32(*p)
 	bound = (nrange >> 11) * val
-	if code < bound {
-		nrange = bound
-		*p = prob(val + (2048-val)>>5)
-		b = 0
-	} else {
-		code -= bound
-		nrange -= bound
-		*p = prob(val - (val >> 5))
-		b = 1
-	}
+	mask = uint32((int64(code) - int64(bound)) >> 63)
+	nrange = (bound & mask) | ((nrange - bound) & ^mask)
+	code -= bound & ^mask
+	*p = prob(val + (((2048 - val) >> 5) & mask) - ((val >> 5) & ^mask))
+	b = ^mask & 1
 	if nrange < (1 << 24) {
 		nrange <<= 8
 		if pos < limit {
@@ -171,16 +160,11 @@ func (d *decoder) processNextOp() error {
 	p = &d.State.isRepG0[state]
 	val = uint32(*p)
 	bound = (nrange >> 11) * val
-	if code < bound {
-		nrange = bound
-		*p = prob(val + (2048-val)>>5)
-		b = 0
-	} else {
-		code -= bound
-		nrange -= bound
-		*p = prob(val - (val >> 5))
-		b = 1
-	}
+	mask = uint32((int64(code) - int64(bound)) >> 63)
+	nrange = (bound & mask) | ((nrange - bound) & ^mask)
+	code -= bound & ^mask
+	*p = prob(val + (((2048 - val) >> 5) & mask) - ((val >> 5) & ^mask))
+	b = ^mask & 1
 	if nrange < (1 << 24) {
 		nrange <<= 8
 		if pos < limit {
@@ -197,16 +181,11 @@ func (d *decoder) processNextOp() error {
 		p = &d.State.isRepG0Long[state2]
 		val = uint32(*p)
 		bound = (nrange >> 11) * val
-		if code < bound {
-			nrange = bound
-			*p = prob(val + (2048-val)>>5)
-			b = 0
-		} else {
-			code -= bound
-			nrange -= bound
-			*p = prob(val - (val >> 5))
-			b = 1
-		}
+		mask = uint32((int64(code) - int64(bound)) >> 63)
+		nrange = (bound & mask) | ((nrange - bound) & ^mask)
+		code -= bound & ^mask
+		*p = prob(val + (((2048 - val) >> 5) & mask) - ((val >> 5) & ^mask))
+		b = ^mask & 1
 		if nrange < (1 << 24) {
 			nrange <<= 8
 			if pos < limit {
@@ -233,16 +212,11 @@ func (d *decoder) processNextOp() error {
 		p = &d.State.isRepG1[state]
 		val = uint32(*p)
 		bound = (nrange >> 11) * val
-		if code < bound {
-			nrange = bound
-			*p = prob(val + (2048-val)>>5)
-			b = 0
-		} else {
-			code -= bound
-			nrange -= bound
-			*p = prob(val - (val >> 5))
-			b = 1
-		}
+		mask = uint32((int64(code) - int64(bound)) >> 63)
+		nrange = (bound & mask) | ((nrange - bound) & ^mask)
+		code -= bound & ^mask
+		*p = prob(val + (((2048 - val) >> 5) & mask) - ((val >> 5) & ^mask))
+		b = ^mask & 1
 		if nrange < (1 << 24) {
 			nrange <<= 8
 			if pos < limit {
@@ -260,16 +234,11 @@ func (d *decoder) processNextOp() error {
 			p = &d.State.isRepG2[state]
 			val = uint32(*p)
 			bound = (nrange >> 11) * val
-			if code < bound {
-				nrange = bound
-				*p = prob(val + (2048-val)>>5)
-				b = 0
-			} else {
-				code -= bound
-				nrange -= bound
-				*p = prob(val - (val >> 5))
-				b = 1
-			}
+			mask = uint32((int64(code) - int64(bound)) >> 63)
+			nrange = (bound & mask) | ((nrange - bound) & ^mask)
+			code -= bound & ^mask
+			*p = prob(val + (((2048 - val) >> 5) & mask) - ((val >> 5) & ^mask))
+			b = ^mask & 1
 			if nrange < (1 << 24) {
 				nrange <<= 8
 				if pos < limit {

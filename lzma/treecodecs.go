@@ -51,16 +51,11 @@ func (tc *treeCodec) Decode(d *rangeDecoder) uint32 {
 		for j := 0; j < bits; j++ {
 			val := uint32(probs[m])
 			bound := (nrange >> 11) * val
-			if code < bound {
-				nrange = bound
-				probs[m] = prob(val + (2048-val)>>5)
-				m <<= 1
-			} else {
-				code -= bound
-				nrange -= bound
-				probs[m] = prob(val - (val >> 5))
-				m = (m << 1) | 1
-			}
+			mask := uint32((int64(code) - int64(bound)) >> 63)
+			nrange = (bound & mask) | ((nrange - bound) & ^mask)
+			code -= bound & ^mask
+			probs[m] = prob(val + (((2048 - val) >> 5) & mask) - ((val >> 5) & ^mask))
+			m = (m << 1) | (^mask & 1)
 			if nrange < (1 << 24) {
 				nrange <<= 8
 				code = (code << 8) | uint32(buf[pos])
@@ -76,16 +71,11 @@ func (tc *treeCodec) Decode(d *rangeDecoder) uint32 {
 	for j := 0; j < bits; j++ {
 		val := uint32(probs[m])
 		bound := (nrange >> 11) * val
-		if code < bound {
-			nrange = bound
-			probs[m] = prob(val + (2048-val)>>5)
-			m <<= 1
-		} else {
-			code -= bound
-			nrange -= bound
-			probs[m] = prob(val - (val >> 5))
-			m = (m << 1) | 1
-		}
+		mask := uint32((int64(code) - int64(bound)) >> 63)
+		nrange = (bound & mask) | ((nrange - bound) & ^mask)
+		code -= bound & ^mask
+		probs[m] = prob(val + (((2048 - val) >> 5) & mask) - ((val >> 5) & ^mask))
+		m = (m << 1) | (^mask & 1)
 		if nrange < (1 << 24) {
 			nrange <<= 8
 			if pos < limit {
@@ -159,17 +149,11 @@ func (tc *treeReverseCodec) Decode(d *rangeDecoder) uint32 {
 		for j := uint(0); j < bits; j++ {
 			val := uint32(probs[m])
 			bound := (nrange >> 11) * val
-			var bit uint32
-			if code < bound {
-				nrange = bound
-				probs[m] = prob(val + (2048-val)>>5)
-				bit = 0
-			} else {
-				code -= bound
-				nrange -= bound
-				probs[m] = prob(val - (val >> 5))
-				bit = 1
-			}
+			mask := uint32((int64(code) - int64(bound)) >> 63)
+			nrange = (bound & mask) | ((nrange - bound) & ^mask)
+			code -= bound & ^mask
+			probs[m] = prob(val + (((2048 - val) >> 5) & mask) - ((val >> 5) & ^mask))
+			bit := ^mask & 1
 			if nrange < (1 << 24) {
 				nrange <<= 8
 				code = (code << 8) | uint32(buf[pos])
@@ -187,17 +171,11 @@ func (tc *treeReverseCodec) Decode(d *rangeDecoder) uint32 {
 	for j := uint(0); j < bits; j++ {
 		val := uint32(probs[m])
 		bound := (nrange >> 11) * val
-		var bit uint32
-		if code < bound {
-			nrange = bound
-			probs[m] = prob(val + (2048-val)>>5)
-			bit = 0
-		} else {
-			code -= bound
-			nrange -= bound
-			probs[m] = prob(val - (val >> 5))
-			bit = 1
-		}
+		mask := uint32((int64(code) - int64(bound)) >> 63)
+		nrange = (bound & mask) | ((nrange - bound) & ^mask)
+		code -= bound & ^mask
+		probs[m] = prob(val + (((2048 - val) >> 5) & mask) - ((val >> 5) & ^mask))
+		bit := ^mask & 1
 		if nrange < (1 << 24) {
 			nrange <<= 8
 			if pos < limit {

@@ -51,23 +51,10 @@ func (p *prob) Encode(e *rangeEncoder, v uint32) error {
 func (p *prob) Decode(d *rangeDecoder) uint32 {
 	val := uint32(*p)
 	bound := (d.nrange >> 11) * val
-	if d.code < bound {
-		d.nrange = bound
-		*p = prob(val + (2048-val)>>5)
-		if d.nrange < (1 << 24) {
-			d.nrange <<= 8
-			if d.pos < d.limit {
-				d.code = (d.code << 8) | uint32(d.buf[d.pos])
-				d.pos++
-			} else {
-				d.updateCodeSlow()
-			}
-		}
-		return 0
-	}
-	d.code -= bound
-	d.nrange -= bound
-	*p = prob(val - (val >> 5))
+	mask := uint32((int64(d.code) - int64(bound)) >> 63)
+	d.nrange = (bound & mask) | ((d.nrange - bound) & ^mask)
+	d.code -= bound & ^mask
+	*p = prob(val + (((2048 - val) >> 5) & mask) - ((val >> 5) & ^mask))
 	if d.nrange < (1 << 24) {
 		d.nrange <<= 8
 		if d.pos < d.limit {
@@ -77,5 +64,5 @@ func (p *prob) Decode(d *rangeDecoder) uint32 {
 			d.updateCodeSlow()
 		}
 	}
-	return 1
+	return ^mask & 1
 }

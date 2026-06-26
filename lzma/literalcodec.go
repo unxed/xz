@@ -108,17 +108,11 @@ func (c *literalCodec) Decode(d *rangeDecoder,
 
 				val := uint32(probs[i])
 				bound := (nrange >> 11) * val
-				var bit uint32
-				if code < bound {
-					nrange = bound
-					probs[i] = prob(val + (2048-val)>>5)
-					bit = 0
-				} else {
-					code -= bound
-					nrange -= bound
-					probs[i] = prob(val - (val >> 5))
-					bit = 1
-				}
+				mask := uint32((int64(code) - int64(bound)) >> 63)
+				nrange = (bound & mask) | ((nrange - bound) & ^mask)
+				code -= bound & ^mask
+				probs[i] = prob(val + (((2048 - val) >> 5) & mask) - ((val >> 5) & ^mask))
+				bit := ^mask & 1
 				if nrange < (1 << 24) {
 					nrange <<= 8
 					code = (code << 8) | uint32(buf[pos])
@@ -137,17 +131,11 @@ func (c *literalCodec) Decode(d *rangeDecoder,
 		for symbol < 0x100 {
 			val := uint32(probs[symbol])
 			bound := (nrange >> 11) * val
-			var bit uint32
-			if code < bound {
-				nrange = bound
-				probs[symbol] = prob(val + (2048-val)>>5)
-				bit = 0
-			} else {
-				code -= bound
-				nrange -= bound
-				probs[symbol] = prob(val - (val >> 5))
-				bit = 1
-			}
+			mask := uint32((int64(code) - int64(bound)) >> 63)
+			nrange = (bound & mask) | ((nrange - bound) & ^mask)
+			code -= bound & ^mask
+			probs[symbol] = prob(val + (((2048 - val) >> 5) & mask) - ((val >> 5) & ^mask))
+			bit := ^mask & 1
 			if nrange < (1 << 24) {
 				nrange <<= 8
 				code = (code << 8) | uint32(buf[pos])
@@ -170,17 +158,11 @@ func (c *literalCodec) Decode(d *rangeDecoder,
 
 			val := uint32(probs[i])
 			bound := (nrange >> 11) * val
-			var bit uint32
-			if code < bound {
-				nrange = bound
-				probs[i] = prob(val + (2048-val)>>5)
-				bit = 0
-			} else {
-				code -= bound
-				nrange -= bound
-				probs[i] = prob(val - (val >> 5))
-				bit = 1
-			}
+			mask := uint32((int64(code) - int64(bound)) >> 63)
+			nrange = (bound & mask) | ((nrange - bound) & ^mask)
+			code -= bound & ^mask
+			probs[i] = prob(val + (((2048 - val) >> 5) & mask) - ((val >> 5) & ^mask))
+			bit := ^mask & 1
 			if nrange < (1 << 24) {
 				nrange <<= 8
 				if pos < limit {
@@ -210,17 +192,11 @@ func (c *literalCodec) Decode(d *rangeDecoder,
 	for symbol < 0x100 {
 		val := uint32(probs[symbol])
 		bound := (nrange >> 11) * val
-		var bit uint32
-		if code < bound {
-			nrange = bound
-			probs[symbol] = prob(val + (2048-val)>>5)
-			bit = 0
-		} else {
-			code -= bound
-			nrange -= bound
-			probs[symbol] = prob(val - (val >> 5))
-			bit = 1
-		}
+		mask := uint32((int64(code) - int64(bound)) >> 63)
+		nrange = (bound & mask) | ((nrange - bound) & ^mask)
+		code -= bound & ^mask
+		probs[symbol] = prob(val + (((2048 - val) >> 5) & mask) - ((val >> 5) & ^mask))
+		bit := ^mask & 1
 		if nrange < (1 << 24) {
 			nrange <<= 8
 			if pos < limit {
