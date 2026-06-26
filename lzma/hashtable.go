@@ -16,7 +16,7 @@ import (
 
 // maxMatches limits the number of matches requested from the Matches
 // function. This controls the speed of the overall encoding.
-const maxMatches = 8
+const maxMatches = 4
 
 // shortDists defines the number of short distances supported by the
 // implementation.
@@ -48,8 +48,11 @@ type hashTable struct {
 	hoff int64
 	wordLen int
 	history [4]byte
-	p         [maxMatches]int64
-	distances [maxMatches + shortDists]int
+	p         [16]int64 // Максимальный размер буфера кандидатов
+	distances [16 + shortDists]int
+
+	maxMatches int
+	checkReps  bool
 }
 
 // hashTableExponent derives the hash table exponent from the dictionary
@@ -120,13 +123,23 @@ func newHashTable(capacity int, wordLen int) (t *hashTable, err error) {
 	if n <= 0 {
 		panic("newHashTable: exponent is too large")
 	}
+
+	maxMatches := 8
+	checkReps := false
+	if capacity <= 32*1024*1024 { // Быстрый режим активируется для всех стандартных словарей до 32 МБ включительно
+		maxMatches = 4
+		checkReps = true
+	}
+
 	t = &hashTable{
-		t:       getTSlice(n),
-		data:    getDataSlice(capacity),
-		mask:    (uint64(1) << uint(exp)) - 1,
-		hoff:    -int64(wordLen),
-		wordLen: wordLen,
-		history: [4]byte{},
+		t:          getTSlice(n),
+		data:       getDataSlice(capacity),
+		mask:       (uint64(1) << uint(exp)) - 1,
+		hoff:       -int64(wordLen),
+		wordLen:    wordLen,
+		history:    [4]byte{},
+		maxMatches: maxMatches,
+		checkReps:  checkReps,
 	}
 	return t, nil
 }
@@ -346,14 +359,20 @@ func (t *hashTable) NextOp(rep [4]uint32) operation {
 	if n < t.wordLen {
 		p = t.p[:0]
 	} else {
-		p = t.p[:maxMatches]
+		p = t.p[:t.maxMatches]
 		n = t.Matches(data[:t.wordLen], p)
 		p = p[:n]
 	}
 
-	// convert positions in potential distances
 	head := t.dict.head
-	dists := append(t.distances[:0], 1, 2, 3, 4, 5, 6, 7, 8)
+	var dists []int
+	if t.checkReps {
+		// Быстрый режим (уровни 1-5): проверяем только активные повторы
+		dists = append(t.distances[:0], int(rep[0]+minDistance), int(rep[1]+minDistance), int(rep[2]+minDistance), int(rep[3]+minDistance))
+	} else {
+		// Классический режим (уровни 6-9): глубокий поиск по коротким дистанциям
+		dists = append(t.distances[:0], 1, 2, 3, 4, 5, 6, 7, 8)
+	}
 	for _, pos := range p {
 		dis := int(head - pos)
 		if dis > shortDists {

@@ -210,6 +210,7 @@ func (w *Writer2) Reset(lzma2 io.Writer) error {
 		w.seqW.cstate = start
 		w.seqW.ctype = start.defaultChunkType()
 		w.seqW.start.Reset()
+		w.seqW.bypass = false
 
 		w.seqW.encoder.state.deepcopy(w.seqW.start)
 		w.seqW.encoder.dict.Reset()
@@ -387,6 +388,15 @@ func (w *Writer2) worker() {
 			continue
 		}
 
+		// Включаем Bypass для всех стандартных уровней сжатия (dictCap <= 32MB)
+		if w.config.DictCap <= 32*1024*1024 && isHighlyIncompressible(job.data) {
+			job.out = bufPool.Get().(*bytes.Buffer)
+			job.out.Reset()
+			job.err = writeRawUncompressed(job.out, job.data, true)
+			w.outCh <- job
+			continue
+		}
+
 		job.out = bufPool.Get().(*bytes.Buffer)
 		job.out.Reset()
 
@@ -449,6 +459,7 @@ type seqWriter2 struct {
 	ctype   chunkType
 	buf     bytes.Buffer
 	lbw     LimitedByteWriter
+	bypass  bool
 }
 
 func newSeqWriter2(lzma2 io.Writer, c Writer2Config) (*seqWriter2, error) {
@@ -483,6 +494,17 @@ func (w *seqWriter2) written() int {
 }
 
 func (w *seqWriter2) Write(p []byte) (n int, err error) {
+	if w.bypass {
+		err = writeRawUncompressed(w.w, p, false)
+		return len(p), err
+	}
+	// Fast-track: упреждающий пропуск для последовательного упаковщика (только при dictCap <= 32MB)
+	if w.encoder.dict.capacity <= 32*1024*1024 && w.written() == 0 && isHighlyIncompressible(p) {
+		w.bypass = true
+		err = writeRawUncompressed(w.w, p, true)
+		return len(p), err
+	}
+
 	for n < len(p) {
 		m := maxUncompressed - w.written()
 		if m <= 0 {
@@ -608,10 +630,88 @@ func (w *seqWriter2) flushChunk() error {
 }
 
 func (w *seqWriter2) Flush() error {
+	if w.bypass {
+		return nil
+	}
 	for w.written() > 0 {
 		if err := w.flushChunk(); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// isHighlyIncompressible оценивает уникальность байт на 4 участках блока.
+// Позволяет быстро пропускать тяжело сжимаемые/случайные данные (сжатые/зашифрованные/медиа).
+func isHighlyIncompressible(data []byte) bool {
+	if len(data) < 4096 {
+		return false
+	}
+	numIncompressibleParts := 0
+	samples := [4]int{0, len(data) / 4, len(data) / 2, (len(data) * 3) / 4}
+
+	for _, start := range samples {
+		if start+512 > len(data) {
+			break
+		}
+		var freq [256]int
+		unique := 0
+		for i := 0; i < 512; i++ {
+			b := data[start+i]
+			if freq[b] == 0 {
+				unique++
+			}
+			freq[b]++
+		}
+		// Порог загрублен со 190 до 205 уникальных значений из 512.
+		// Это гарантирует, что частично сжимаемые Mixed-данные пойдут в кодер,
+		// а чистый криптографический/сжатый шум улетит в Bypass.
+		if unique > 205 {
+			numIncompressibleParts++
+		}
+	}
+	return numIncompressibleParts >= 2
+}
+
+// writeRawUncompressed нарезает несжимаемый блок на стандартные LZMA2-чанки без компрессии.
+// Внимание: максимальный размер uncompressed чанка ограничен 16 битами (64 KB), в отличие от сжатых чанков.
+func writeRawUncompressed(w io.Writer, data []byte, resetDict bool) error {
+	const maxUncompressedChunk = 65536
+	n := 0
+	first := true
+	for n < len(data) {
+		chunkSize := len(data) - n
+		if chunkSize > maxUncompressedChunk {
+			chunkSize = maxUncompressedChunk
+		}
+
+		var ctype chunkType
+		if first {
+			if resetDict {
+				ctype = cUD // Чанк без сжатия, сбросить словарь (64 KB)
+			} else {
+				ctype = cU
+			}
+			first = false
+		} else {
+			ctype = cU
+		}
+
+		header := chunkHeader{
+			ctype:        ctype,
+			uncompressed: uint32(chunkSize - 1),
+		}
+		hdata, err := header.MarshalBinary()
+		if err != nil {
+			return err
+		}
+		if _, err := w.Write(hdata); err != nil {
+			return err
+		}
+		if _, err := w.Write(data[n : n+chunkSize]); err != nil {
+			return err
+		}
+		n += chunkSize
 	}
 	return nil
 }

@@ -43,6 +43,8 @@ type binTree struct {
 	x uint32
 	// preallocated array
 	data []byte
+
+	check int
 }
 
 // null represents the nonexistent index. We can't use zero because it
@@ -81,11 +83,16 @@ func newBinTree(capacity int) (t *binTree, err error) {
 		return nil, errors.New(
 			"newBinTree: capacity must less 2^{32}-1")
 	}
+	check := 32
+	if capacity <= 32*1024*1024 {
+		check = 16 // Быстрый режим активируется для всех стандартных словарей до 32 МБ включительно
+	}
 	t = &binTree{
 		node: getNodeSlice(capacity),
 		hoff: -int64(wordLen),
 		root: null,
 		data: getBufferSlice(maxMatchLen),
+		check: check,
 	}
 	return t, nil
 }
@@ -489,7 +496,7 @@ func (t *binTree) NextOp(rep [4]uint32) operation {
 	p := matchParams{
 		rep:     rep,
 		nAccept: maxMatchLen,
-		check:   32,
+		check:   t.check,
 	}
 	i := 4
 	iterSmall := func() (dist int, ok bool) {
