@@ -5,8 +5,9 @@
 package lzma
 
 import (
-    "io"
 	"errors"
+	"io"
+	"unsafe"
 )
 
 // buffer provides a circular buffer of bytes. If the front index equals
@@ -163,15 +164,26 @@ func (b *buffer) WriteByte(c byte) error {
 
 // prefixLen returns the length of the common prefix of a and b.
 func prefixLen(a, b []byte) int {
-	if len(a) > len(b) {
-		a, b = b, a
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
 	}
-	for i, c := range a {
-		if b[i] != c {
-			return i
+	i := 0
+	// Быстрое сравнение машинным словом (по 8 байт за раз)
+	for i+8 <= n {
+		if *(*uint64)(unsafe.Pointer(&a[i])) != *(*uint64)(unsafe.Pointer(&b[i])) {
+			break
 		}
+		i += 8
 	}
-	return len(a)
+	// Досравниваем остаток побайтово
+	for i < n {
+		if a[i] != b[i] {
+			break
+		}
+		i++
+	}
+	return i
 }
 
 // matchLen returns the length of the common prefix for the given
