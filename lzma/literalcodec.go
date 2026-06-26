@@ -16,7 +16,11 @@ func (c *literalCodec) deepcopy(src *literalCodec) {
 	if c == src {
 		return
 	}
-	c.probs = make([]prob, len(src.probs))
+	if cap(c.probs) >= len(src.probs) {
+		c.probs = c.probs[:len(src.probs)]
+	} else {
+		c.probs = make([]prob, len(src.probs))
+	}
 	copy(c.probs, src.probs)
 }
 
@@ -28,7 +32,12 @@ func (c *literalCodec) init(lc, lp int) {
 	case !(minLP <= lp && lp <= maxLP):
 		panic("lp out of range")
 	}
-	c.probs = make([]prob, 0x300<<uint(lc+lp))
+	size := 0x300 << uint(lc+lp)
+	if cap(c.probs) >= size {
+		c.probs = c.probs[:size]
+	} else {
+		c.probs = make([]prob, size)
+	}
 	for i := range c.probs {
 		c.probs[i] = probInit
 	}

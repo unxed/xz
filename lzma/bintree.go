@@ -592,7 +592,7 @@ func (t *binTree) NextOp(rep [4]uint32) operation {
 	}
 end:
 	if m.n == 0 {
-		return lit{t.data[0]}
+		return operation{typ: opTypeLit, lit: t.data[0]}
 	}
-	return m
+	return operation{typ: opTypeMatch, distance: m.distance, length: int32(m.n)}
 }

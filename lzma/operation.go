@@ -11,45 +11,43 @@ import (
 
 // operation represents an operation on the dictionary during encoding or
 // decoding.
-type operation interface {
-	Len() int
+type opType uint8
+
+const (
+	opTypeLit opType = iota
+	opTypeMatch
+)
+
+// operation represents an operation on the dictionary during encoding or decoding.
+type operation struct {
+	distance int64
+	length   int32
+	lit      byte
+	typ      opType
+}
+
+func (o operation) Len() int {
+	if o.typ == opTypeMatch {
+		return int(o.length)
+	}
+	return 1
+}
+
+func (o *operation) String() string {
+	if o.typ == opTypeMatch {
+		return fmt.Sprintf("M{%d,%d}", o.distance, o.length)
+	}
+	var c byte
+	if unicode.IsPrint(rune(o.lit)) {
+		c = o.lit
+	} else {
+		c = '.'
+	}
+	return fmt.Sprintf("L{%c/%02x}", c, o.lit)
 }
 
 // rep represents a repetition at the given distance and the given length
 type match struct {
-	// supports all possible distance values, including the eos marker
 	distance int64
-	// length
-	n int
-}
-
-// Len returns the number of bytes matched.
-func (m match) Len() int {
-	return m.n
-}
-
-// String returns a string representation for the repetition.
-func (m match) String() string {
-	return fmt.Sprintf("M{%d,%d}", m.distance, m.n)
-}
-
-// lit represents a single byte literal.
-type lit struct {
-	b byte
-}
-
-// Len returns 1 for the single byte literal.
-func (l lit) Len() int {
-	return 1
-}
-
-// String returns a string representation for the literal.
-func (l lit) String() string {
-	var c byte
-	if unicode.IsPrint(rune(l.b)) {
-		c = l.b
-	} else {
-		c = '.'
-	}
-	return fmt.Sprintf("L{%c/%02x}", c, l.b)
+	n        int
 }

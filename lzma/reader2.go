@@ -121,7 +121,8 @@ func (r *Reader2) startChunk() error {
 	case cLR:
 		r.decoder.State.Reset()
 	case cLRN, cLRND:
-		r.decoder.State = newState(header.props)
+		r.decoder.State.Properties = header.props
+		r.decoder.State.Reset()
 	}
 	err = r.decoder.Reopen(br, size)
 	if err != nil {

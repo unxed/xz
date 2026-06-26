@@ -404,7 +404,7 @@ func (t *hashTable) NextOp(rep [4]uint32) operation {
 	}
 
 	if m.n == 0 {
-		return lit{data[0]}
+		return operation{typ: opTypeLit, lit: data[0]}
 	}
-	return m
+	return operation{typ: opTypeMatch, distance: m.distance, length: int32(m.n)}
 }

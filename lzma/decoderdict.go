@@ -32,7 +32,7 @@ func newDecoderDict(dictCap int) (d *decoderDict, err error) {
 	var data []byte
 	if v := dictPool.Get(); v != nil {
 		bufSlice := v.([]byte)
-		if len(bufSlice) >= dictCap+1 {
+		if cap(bufSlice) >= dictCap+1 {
 			data = bufSlice[:dictCap+1]
 		}
 	}

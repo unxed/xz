@@ -108,6 +108,10 @@ type Writer2 struct {
 	closed bool
 }
 
+var bufPool = sync.Pool{
+	New: func() interface{} { return new(bytes.Buffer) },
+}
+
 // NewWriter2 creates an LZMA2 chunk sequence writer with the default
 // parameters and options.
 func NewWriter2(lzma2 io.Writer) (w *Writer2, err error) {
@@ -310,6 +314,10 @@ func (w *Writer2) coordinator() {
 		}
 		if job.err != nil {
 			w.setError(job.err)
+			if job.out != nil {
+				bufPool.Put(job.out)
+				job.out = nil
+			}
 			w.pendingWg.Done()
 			continue
 		}
@@ -321,6 +329,10 @@ func (w *Writer2) coordinator() {
 					if _, err := w.w.Write(j.out.Bytes()); err != nil {
 						w.setError(err)
 					}
+				}
+				if j.out != nil {
+					bufPool.Put(j.out)
+					j.out = nil
 				}
 				delete(results, writeSeq)
 				writeSeq++
@@ -375,7 +387,8 @@ func (w *Writer2) worker() {
 			continue
 		}
 
-		job.out = new(bytes.Buffer)
+		job.out = bufPool.Get().(*bytes.Buffer)
+		job.out.Reset()
 
 		seqW.w = job.out
 		seqW.cstate = start
