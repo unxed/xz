@@ -111,6 +111,12 @@ type Writer2 struct {
 var bufPool = sync.Pool{
 	New: func() interface{} { return new(bytes.Buffer) },
 }
+var chunkDataPool = sync.Pool{
+	New: func() interface{} {
+		b := make([]byte, 0, 8*1024*1024)
+		return &b
+	},
+}
 
 // NewWriter2 creates an LZMA2 chunk sequence writer with the default
 // parameters and options.
@@ -232,6 +238,10 @@ func (w *Writer2) Write(p []byte) (n int, err error) {
 		}
 		n = len(p)
 		for len(p) > 0 {
+			if w.inBuf == nil {
+				ptr := chunkDataPool.Get().(*[]byte)
+				w.inBuf = (*ptr)[:0]
+			}
 			space := w.blockSize - len(w.inBuf)
 			if space > len(p) {
 				space = len(p)
@@ -439,6 +449,9 @@ func (w *Writer2) worker() {
 		if job.err == nil {
 			job.err = seqW.Flush()
 		}
+
+		ptr := &job.data
+		chunkDataPool.Put(ptr)
 
 		w.outCh <- job
 	}

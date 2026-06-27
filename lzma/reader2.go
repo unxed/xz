@@ -7,6 +7,9 @@ package lzma
 import (
 	"errors"
 	"io"
+	"bufio"
+	"runtime"
+	"sync"
 
 	"github.com/unxed/xz/internal/xlog"
 )
@@ -50,25 +53,70 @@ type Reader2 struct {
 	cstate chunkState
 }
 
+type seekReaderAt interface {
+	io.ReaderAt
+	io.Seeker
+}
+
+func streamSizeBySeeking(s io.Seeker) (int64, error) {
+	curr, err := s.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return 0, err
+	}
+	size, err := s.Seek(0, io.SeekEnd)
+	if err != nil {
+		return 0, err
+	}
+	_, err = s.Seek(curr, io.SeekStart)
+	return size, err
+}
+
 // NewReader2 creates a reader for an LZMA2 chunk sequence.
-func NewReader2(lzma2 io.Reader) (r *Reader2, err error) {
+func NewReader2(lzma2 io.Reader) (r io.ReadCloser, err error) {
 	return Reader2Config{}.NewReader2(lzma2)
 }
 
 // NewReader2 creates an LZMA2 reader using the given configuration.
-func (c Reader2Config) NewReader2(lzma2 io.Reader) (r *Reader2, err error) {
+func (c Reader2Config) NewReader2(lzma2 io.Reader) (r io.ReadCloser, err error) {
 	if err = c.Verify(); err != nil {
 		return nil, err
 	}
-	r = &Reader2{r: lzma2, cstate: start}
-	r.dict, err = newDecoderDict(c.DictCap)
+
+	// Try parallel decompression if the input is seekable and has multiple independent segments
+	if sra, ok := lzma2.(seekReaderAt); ok {
+		currentOffset, err := sra.Seek(0, io.SeekCurrent)
+		if err == nil {
+			size, err := streamSizeBySeeking(sra)
+			if err == nil {
+				var rAt io.ReaderAt = sra
+				streamSize := size
+				if currentOffset > 0 {
+					rAt = io.NewSectionReader(sra, currentOffset, size-currentOffset)
+					streamSize = size - currentOffset
+				}
+
+				segments, errSegs := parseSegments(rAt, streamSize)
+				if errSegs == nil && len(segments) > 1 {
+					var closer io.Closer
+					if cl, ok := lzma2.(io.Closer); ok {
+						closer = cl
+					}
+					pr := newParallelReader2(rAt, segments, c, closer)
+					return pr, nil
+				}
+			}
+		}
+	}
+
+	r2 := &Reader2{r: lzma2, cstate: start}
+	r2.dict, err = newDecoderDict(c.DictCap)
 	if err != nil {
 		return nil, err
 	}
-	if err = r.startChunk(); err != nil {
-		r.err = err
+	if err = r2.startChunk(); err != nil {
+		r2.err = err
 	}
-	return r, nil
+	return r2, nil
 }
 
 // uncompressed tests whether the chunk type specifies an uncompressed
@@ -237,4 +285,248 @@ func (ur *uncompressedReader) Read(p []byte) (n int, err error) {
 	}
 	ur.err = err
 	return n, err
+}
+type blockResult struct {
+	data  []byte
+	err   error
+	ready chan struct{}
+}
+
+type segmentInfo struct {
+	CompOffset   int64
+	CompSize     int64
+	UncompOffset int64
+	UncompSize   int64
+}
+
+// parseSegments быстро сканирует сырой LZMA2-поток для нахождения точек сброса словаря
+// Это позволяет разбить поток на независимые сегменты для параллельной распаковки
+func parseSegments(r io.ReaderAt, size int64) ([]segmentInfo, error) {
+	var segments []segmentInfo
+	var current segmentInfo
+	var inSegment bool
+
+	sr := io.NewSectionReader(r, 0, size)
+	br := bufio.NewReaderSize(sr, 64*1024)
+
+	var compOffset int64
+	var uncompOffset int64
+
+	for compOffset < size {
+		p, err := br.Peek(1)
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return nil, err
+		}
+		control := p[0]
+		if control == 0 { // cEOS
+			br.Discard(1)
+			compOffset++
+			if inSegment {
+				current.CompSize = compOffset - current.CompOffset
+				segments = append(segments, current)
+				inSegment = false
+			}
+			break
+		}
+
+		c, err := headerChunkType(control)
+		if err != nil {
+			return nil, err
+		}
+
+		hlen := headerLen(c)
+		hdata := make([]byte, hlen)
+		if _, err := io.ReadFull(br, hdata); err != nil {
+			return nil, err
+		}
+
+		var ch chunkHeader
+		if err := ch.UnmarshalBinary(hdata); err != nil {
+			return nil, err
+		}
+
+		isReset := (c == cUD) || (c == cLRND)
+
+		if isReset {
+			if inSegment {
+				current.CompSize = compOffset - current.CompOffset
+				segments = append(segments, current)
+			}
+			current = segmentInfo{
+				CompOffset:   compOffset,
+				UncompOffset: uncompOffset,
+			}
+			inSegment = true
+		} else if !inSegment {
+			current = segmentInfo{
+				CompOffset:   compOffset,
+				UncompOffset: uncompOffset,
+			}
+			inSegment = true
+		}
+
+		compOffset += int64(hlen)
+		var skip int
+		if c != cUD && c != cU && c != cEOS {
+			skip = int(ch.compressed) + 1
+		} else if c == cUD || c == cU {
+			skip = int(ch.uncompressed) + 1
+		}
+
+		if skip > 0 {
+			if _, err := br.Discard(skip); err != nil {
+				return nil, err
+			}
+			compOffset += int64(skip)
+		}
+
+		uncompAdd := int64(ch.uncompressed) + 1
+		uncompOffset += uncompAdd
+		if inSegment {
+			current.UncompSize += uncompAdd
+		}
+	}
+
+	if inSegment {
+		current.CompSize = compOffset - current.CompOffset
+		segments = append(segments, current)
+	}
+
+	return segments, nil
+}
+
+type parallelReader2 struct {
+	segments []segmentInfo
+	r        io.ReaderAt
+	config   Reader2Config
+
+	results []*blockResult
+	current int
+	offset  int
+
+	quit chan struct{}
+	wg   sync.WaitGroup
+	c    io.Closer
+}
+
+func newParallelReader2(r io.ReaderAt, segments []segmentInfo, config Reader2Config, closer io.Closer) *parallelReader2 {
+	pr := &parallelReader2{
+		segments: segments,
+		r:        r,
+		config:   config,
+		results:  make([]*blockResult, len(segments)),
+		quit:     make(chan struct{}),
+		c:        closer,
+	}
+	for i := range segments {
+		pr.results[i] = &blockResult{
+			ready: make(chan struct{}),
+		}
+	}
+
+	numWorkers := runtime.GOMAXPROCS(0)
+	if numWorkers > len(segments) {
+		numWorkers = len(segments)
+	}
+	if numWorkers < 1 {
+		numWorkers = 1
+	}
+
+	workCh := make(chan int, numWorkers*2)
+
+	for i := 0; i < numWorkers; i++ {
+		pr.wg.Add(1)
+		go pr.worker(workCh)
+	}
+
+	go func() {
+		defer close(workCh)
+		for i := range segments {
+			select {
+			case workCh <- i:
+			case <-pr.quit:
+				return
+			}
+		}
+	}()
+
+	return pr
+}
+
+func (pr *parallelReader2) worker(workCh <-chan int) {
+	defer pr.wg.Done()
+	for i := range workCh {
+		select {
+		case <-pr.quit:
+			res := pr.results[i]
+			res.err = errors.New("lzma2: parallel reader closed")
+			close(res.ready)
+			continue
+		default:
+		}
+
+		seg := pr.segments[i]
+		sr := io.NewSectionReader(pr.r, seg.CompOffset, seg.CompSize)
+		seqR, err := pr.config.NewReader2(sr)
+		var data []byte
+		if err == nil {
+			// Preallocate exactly UncompSize
+			data = make([]byte, seg.UncompSize)
+			_, err = io.ReadFull(seqR, data)
+			seqR.Close()
+			if err == io.ErrUnexpectedEOF || err == io.EOF {
+				err = nil // perfectly normal for isolated segments without EOS
+			}
+		}
+
+		res := pr.results[i]
+		res.data = data
+		res.err = err
+		close(res.ready)
+	}
+}
+
+func (pr *parallelReader2) Read(p []byte) (int, error) {
+	if pr.current >= len(pr.segments) {
+		return 0, io.EOF
+	}
+
+	res := pr.results[pr.current]
+
+	select {
+	case <-res.ready:
+	case <-pr.quit:
+		return 0, errors.New("lzma2: parallel reader closed")
+	}
+
+	if res.err != nil {
+		return 0, res.err
+	}
+
+	n := copy(p, res.data[pr.offset:])
+	pr.offset += n
+
+	if pr.offset >= len(res.data) {
+		res.data = nil // free memory
+		pr.current++
+		pr.offset = 0
+	}
+
+	return n, nil
+}
+
+func (pr *parallelReader2) Close() error {
+	select {
+	case <-pr.quit:
+	default:
+		close(pr.quit)
+	}
+	pr.wg.Wait()
+	if pr.c != nil {
+		return pr.c.Close()
+	}
+	return nil
 }
