@@ -193,6 +193,7 @@ func (w *Writer2) setError(err error) {
 		w.err = err
 	}
 }
+
 // Destroy tears down the background worker goroutines. This is primarily
 // called automatically via a runtime finalizer during garbage collection.
 func (w *Writer2) Destroy() {
@@ -686,10 +687,14 @@ func isHighlyIncompressible(data []byte) bool {
 		// Порог загрублен со 190 до 205 уникальных значений из 512.
 		// Это гарантирует, что частично сжимаемые Mixed-данные пойдут в кодер,
 		// а чистый криптографический/сжатый шум улетит в Bypass.
-        // UPD:
+		// UPD:
 		// Порог поднят до 230. 205 все еще ложно срабатывал на многих бинарных файлах,
 		// заставляя архиватор думать, что это несжимаемый шум.
-		if unique > 230 {
+		// UPD#2:
+		// Математическое ожидание: 512 случайных байт (из 256 возможных значений)
+		// дадут в среднем ~221 уникальный байт. Получить >230 физически почти невозможно.
+		// Снижаем порог для 512-байтного окна до 210.
+		if unique > 210 {
 			numIncompressibleParts++
 		}
 	}
