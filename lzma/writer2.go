@@ -44,6 +44,13 @@ func (c *Writer2Config) fill() {
 	if c.Concurrency == 0 {
 		c.Concurrency = runtime.GOMAXPROCS(0)
 	}
+	if c.Matcher == 0 {
+		if c.DictCap > 16*1024*1024 {
+			c.Matcher = BinaryTree
+		} else {
+			c.Matcher = HashTable4
+		}
+	}
 }
 
 // Verify checks the Writer2Config for correctness. Zero values will be
