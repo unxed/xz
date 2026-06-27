@@ -698,7 +698,7 @@ func isHighlyIncompressible(data []byte) bool {
 			numIncompressibleParts++
 		}
 	}
-	return numIncompressibleParts >= 2
+	return numIncompressibleParts >= 3
 }
 
 // writeRawUncompressed нарезает несжимаемый блок на стандартные LZMA2-чанки без компрессии.
