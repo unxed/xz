@@ -175,3 +175,32 @@ func TestWriter2_ParallelCorrectness(t *testing.T) {
 	t.Logf("Sequential compressed size: %.2f MB", float64(len(seqCompressed))/(1024*1024))
 	t.Logf("Parallel compressed size:   %.2f MB", float64(len(parCompressed))/(1024*1024))
 }
+func BenchmarkParallelLZMA2(b *testing.B) {
+	const size = 10 * 1024 * 1024
+	var srcBuf bytes.Buffer
+	io.CopyN(&srcBuf, randtxt.NewReader(rand.NewSource(42)), size)
+	originalData := srcBuf.Bytes()
+
+	var out bytes.Buffer
+	w, _ := Writer2Config{
+		DictCap:     1024 * 1024,
+		Concurrency: 4,
+	}.NewWriter2(&out)
+	w.Write(originalData)
+	w.Close()
+	compressed := out.Bytes()
+
+	b.Run("DecompressParallel", func(b *testing.B) {
+		b.SetBytes(int64(len(originalData)))
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			r, err := Reader2Config{DictCap: 1024 * 1024}.NewReader2(bytes.NewReader(compressed))
+			if err != nil {
+				b.Fatal(err)
+			}
+			io.Copy(io.Discard, r)
+			r.Close()
+		}
+	})
+}

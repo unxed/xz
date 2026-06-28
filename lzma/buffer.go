@@ -6,6 +6,7 @@ package lzma
 
 import (
 	"errors"
+	"unsafe"
 )
 
 // buffer provides a circular buffer of bytes. If the front index equals
@@ -146,12 +147,23 @@ func prefixLen(a, b []byte) int {
 	if len(a) > len(b) {
 		a, b = b, a
 	}
-	for i, c := range a {
-		if b[i] != c {
-			return i
+	n := len(a)
+	i := 0
+	for i+8 <= n {
+		pa := (*uint64)(unsafe.Pointer(&a[i]))
+		pb := (*uint64)(unsafe.Pointer(&b[i]))
+		if *pa != *pb {
+			break
 		}
+		i += 8
 	}
-	return len(a)
+	for i < n {
+		if a[i] != b[i] {
+			break
+		}
+		i++
+	}
+	return i
 }
 
 // matchLen returns the length of the common prefix for the given

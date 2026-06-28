@@ -5,8 +5,11 @@
 package lzma
 
 import (
+	"bytes"
 	"errors"
 	"io"
+	"runtime"
+	"sync"
 
 	"github.com/unxed/xz/internal/xlog"
 )
@@ -51,16 +54,36 @@ type Reader2 struct {
 }
 
 // NewReader2 creates a reader for an LZMA2 chunk sequence.
-func NewReader2(lzma2 io.Reader) (r *Reader2, err error) {
+func NewReader2(lzma2 io.Reader) (io.ReadCloser, error) {
 	return Reader2Config{}.NewReader2(lzma2)
 }
 
 // NewReader2 creates an LZMA2 reader using the given configuration.
-func (c Reader2Config) NewReader2(lzma2 io.Reader) (r *Reader2, err error) {
-	if err = c.Verify(); err != nil {
+func (c Reader2Config) NewReader2(lzma2 io.Reader) (io.ReadCloser, error) {
+	if err := c.Verify(); err != nil {
 		return nil, err
 	}
-	r = &Reader2{r: lzma2, cstate: start}
+
+	if ra, ok := lzma2.(io.ReaderAt); ok {
+		if s, ok := lzma2.(io.Seeker); ok {
+			current, err := s.Seek(0, io.SeekCurrent)
+			if err == nil {
+				end, err := s.Seek(0, io.SeekEnd)
+				if err == nil {
+					_, err = s.Seek(current, io.SeekStart)
+					if err == nil {
+						segments, err := parseSegments(ra, current, end)
+						if err == nil && len(segments) > 1 {
+							return c.newParallelReader2(ra, segments)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	r := &Reader2{r: lzma2, cstate: start}
+	var err error
 	r.dict, err = newDecoderDict(c.DictCap)
 	if err != nil {
 		return nil, err
@@ -236,4 +259,215 @@ func (ur *uncompressedReader) Read(p []byte) (n int, err error) {
 	}
 	ur.err = err
 	return n, err
+}
+type segment struct {
+	offset       int64
+	compressed   int64
+	uncompressed int64
+}
+
+func parseSegments(r io.ReaderAt, start, end int64) ([]segment, error) {
+	var segments []segment
+	var current segment
+	offset := start
+
+	for offset < end {
+		var head [6]byte
+		n, err := r.ReadAt(head[:1], offset)
+		if err != nil && err != io.EOF {
+			return nil, err
+		}
+		if n == 0 {
+			break
+		}
+
+		ctype, err := headerChunkType(head[0])
+		if err != nil {
+			return nil, err
+		}
+
+		hlen := headerLen(ctype)
+		if hlen > 1 {
+			_, err = r.ReadAt(head[1:hlen], offset+1)
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		var ch chunkHeader
+		if err := ch.UnmarshalBinary(head[:hlen]); err != nil {
+			return nil, err
+		}
+
+		if ctype == cEOS {
+			current.compressed += 1
+			if current.compressed > 0 {
+				segments = append(segments, current)
+			}
+			break
+		}
+
+		if ctype == cUD || ctype == cLRND {
+			if current.compressed > 0 {
+				segments = append(segments, current)
+				current = segment{offset: offset}
+			} else {
+				current.offset = offset
+			}
+		}
+
+		chunkCompressed := int64(hlen)
+		if ctype >= cL {
+			chunkCompressed += int64(ch.compressed) + 1
+		} else if ctype == cUD || ctype == cU {
+			chunkCompressed += int64(ch.uncompressed) + 1
+		}
+
+		current.compressed += chunkCompressed
+		current.uncompressed += int64(ch.uncompressed) + 1
+
+		offset += chunkCompressed
+	}
+	return segments, nil
+}
+
+type parallelReader2 struct {
+	segments []segment
+	r        io.ReaderAt
+	config   Reader2Config
+
+	results []*chunkResult
+	wg      sync.WaitGroup
+	quit    chan struct{}
+
+	currentSeg int
+	currentOff int
+}
+
+type chunkResult struct {
+	data  []byte
+	err   error
+	ready chan struct{}
+}
+
+func (c Reader2Config) newParallelReader2(r io.ReaderAt, segments []segment) (io.ReadCloser, error) {
+	pr := &parallelReader2{
+		segments: segments,
+		r:        r,
+		config:   c,
+		results:  make([]*chunkResult, len(segments)),
+		quit:     make(chan struct{}),
+	}
+
+	for i := range segments {
+		pr.results[i] = &chunkResult{
+			ready: make(chan struct{}),
+		}
+	}
+
+	numWorkers := runtime.GOMAXPROCS(0)
+	if numWorkers > len(segments) {
+		numWorkers = len(segments)
+	}
+	if numWorkers < 1 {
+		numWorkers = 1
+	}
+
+	workCh := make(chan int, numWorkers*2)
+
+	for i := 0; i < numWorkers; i++ {
+		pr.wg.Add(1)
+		go pr.worker(workCh)
+	}
+
+	go func() {
+		defer close(workCh)
+		for i := range segments {
+			select {
+			case workCh <- i:
+			case <-pr.quit:
+				return
+			}
+		}
+	}()
+
+	return pr, nil
+}
+
+func (pr *parallelReader2) worker(workCh <-chan int) {
+	defer pr.wg.Done()
+	for i := range workCh {
+		select {
+		case <-pr.quit:
+			res := pr.results[i]
+			res.err = errors.New("lzma: parallel reader closed")
+			close(res.ready)
+			continue
+		default:
+		}
+
+		seg := pr.segments[i]
+		sr := io.NewSectionReader(pr.r, seg.offset, seg.compressed)
+
+		eosReader := io.MultiReader(sr, bytes.NewReader([]byte{0x00}))
+
+		r2, err := pr.config.NewReader2(eosReader)
+		var data []byte
+		if err == nil {
+			data = make([]byte, seg.uncompressed)
+			_, err = io.ReadFull(r2, data)
+			if err == nil {
+				var discard [1]byte
+				_, e := r2.Read(discard[:])
+				if e != io.EOF && e != nil {
+					err = e
+				}
+			}
+			r2.Close()
+		}
+
+		res := pr.results[i]
+		res.data = data
+		res.err = err
+		close(res.ready)
+	}
+}
+
+func (pr *parallelReader2) Read(p []byte) (n int, err error) {
+	if pr.currentSeg >= len(pr.segments) {
+		return 0, io.EOF
+	}
+
+	res := pr.results[pr.currentSeg]
+
+	select {
+	case <-res.ready:
+	case <-pr.quit:
+		return 0, errors.New("lzma: parallel reader closed")
+	}
+
+	if res.err != nil {
+		return 0, res.err
+	}
+
+	n = copy(p, res.data[pr.currentOff:])
+	pr.currentOff += n
+
+	if pr.currentOff >= len(res.data) {
+		res.data = nil
+		pr.currentSeg++
+		pr.currentOff = 0
+	}
+
+	return n, nil
+}
+
+func (pr *parallelReader2) Close() error {
+	select {
+	case <-pr.quit:
+	default:
+		close(pr.quit)
+	}
+	pr.wg.Wait()
+	return nil
 }

@@ -82,6 +82,12 @@ type chunkJob struct {
 	reset bool
 }
 
+var chunkDataPool = sync.Pool{
+	New: func() interface{} {
+		return nil
+	},
+}
+
 // Writer2 supports the creation of an LZMA2 stream. It natively supports
 // parallel block compression to maximize multi-core CPU utilization.
 type Writer2 struct {
@@ -197,7 +203,10 @@ func (w *Writer2) Reset(lzma2 io.Writer) error {
 	w.closed = false
 
 	if w.parallel {
-		w.inBuf = w.inBuf[:0]
+		if cap(w.inBuf) > 0 {
+			chunkDataPool.Put(w.inBuf)
+		}
+		w.inBuf = nil
 		w.nextSeq = 0
 		w.outCh <- &chunkJob{reset: true}
 	} else {
@@ -226,6 +235,13 @@ func (w *Writer2) Write(p []byte) (n int, err error) {
 		}
 		n = len(p)
 		for len(p) > 0 {
+			if w.inBuf == nil {
+				if v := chunkDataPool.Get(); v != nil {
+					w.inBuf = v.([]byte)[:0]
+				} else {
+					w.inBuf = make([]byte, 0, w.blockSize)
+				}
+			}
 			space := w.blockSize - len(w.inBuf)
 			if space > len(p) {
 				space = len(p)
@@ -414,6 +430,9 @@ func (w *Writer2) worker() {
 			job.err = seqW.Flush()
 		}
 
+		if cap(job.data) > 0 {
+			chunkDataPool.Put(job.data)
+		}
 		w.outCh <- job
 	}
 }
