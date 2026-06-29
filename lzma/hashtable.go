@@ -7,6 +7,7 @@ package lzma
 import (
 	"errors"
 	"fmt"
+	"unsafe"
 
 	"github.com/unxed/xz/internal/hash"
 )
@@ -33,7 +34,7 @@ const (
 
 // newRoller contains the function used to create an instance of the
 // hash.Roller.
-var newRoller = func(n int) hash.Roller { return hash.NewCyclicPoly(n) }
+var newRoller = func(n int) *hash.CyclicPoly { return hash.NewCyclicPoly(n) }
 
 // hashTable stores the hash table including the rolling hash method.
 //
@@ -53,14 +54,19 @@ type hashTable struct {
 	hoff int64
 	// length of the hashed word
 	wordLen int
-	// hash roller for computing the hash values for the Write
-	// method
-	wr hash.Roller
 	// hash roller for computing arbitrary hashes
-	hr hash.Roller
+	hr *hash.CyclicPoly
+
+	// Inlined CyclicPoly state for t.wr
+	cpH uint64
+	cpP [4]uint64
+	cpI int
+	cpMask int
+	cpShift uint
+
 	// preallocated slices
 	p         [maxMatches]int64
-	distances [maxMatches + shortDists]int
+    distances [maxMatches + shortDists]int
 }
 
 // hashTableExponent derives the hash table exponent from the dictionary
@@ -97,8 +103,11 @@ func newHashTable(capacity int, wordLen int) (t *hashTable, err error) {
 		mask:    (uint64(1) << uint(exp)) - 1,
 		hoff:    -int64(wordLen),
 		wordLen: wordLen,
-		wr:      newRoller(wordLen),
-		hr:      newRoller(wordLen),
+		cpMask:  wordLen - 1,
+		cpShift: uint(wordLen - 1),
+	}
+	for i := 0; i < 4; i++ {
+		t.cpP[i] = 0
 	}
 	return t, nil
 }
@@ -114,8 +123,13 @@ func (t *hashTable) Reset() {
 	}
 	t.front = 0
 	t.hoff = -int64(t.wordLen)
-	t.wr = newRoller(t.wordLen)
-	t.hr = newRoller(t.wordLen)
+	t.cpH = 0
+	t.cpI = 0
+	t.cpMask = t.wordLen - 1
+	t.cpShift = uint(t.wordLen - 1)
+	for i := 0; i < 4; i++ {
+		t.cpP[i] = 0
+	}
 }
 
 // buffered returns the number of bytes that are currently hashed.
@@ -169,9 +183,14 @@ func (t *hashTable) putEntry(h uint64, pos int64) {
 // WriteByte converts a single byte into a hash and puts them into the hash
 // table.
 func (t *hashTable) WriteByte(b byte) error {
-	h := t.wr.RollByte(b)
+	y := hash.HashValues[b]
+	t.cpH ^= ror(t.cpP[t.cpI], t.cpShift)
+	t.cpH = ror(t.cpH, 1) ^ y
+	t.cpP[t.cpI] = y
+	t.cpI = (t.cpI + 1) & t.cpMask
+
 	t.hoff++
-	t.putEntry(h, t.hoff)
+	t.putEntry(t.cpH, t.hoff)
 	return nil
 }
 
@@ -180,8 +199,14 @@ func (t *hashTable) WriteByte(b byte) error {
 // error.
 func (t *hashTable) Write(p []byte) (n int, err error) {
 	for _, b := range p {
-		// WriteByte doesn't generate an error.
-		t.WriteByte(b)
+		y := hash.HashValues[b]
+		t.cpH ^= ror(t.cpP[t.cpI], t.cpShift)
+		t.cpH = ror(t.cpH, 1) ^ y
+		t.cpP[t.cpI] = y
+		t.cpI = (t.cpI + 1) & t.cpMask
+
+		t.hoff++
+		t.putEntry(t.cpH, t.hoff)
 	}
 	return len(p), nil
 }
@@ -191,45 +216,27 @@ func (t *hashTable) Write(p []byte) (n int, err error) {
 //
 // TODO: Make a getDistances because that we are actually interested in.
 func (t *hashTable) getMatches(h uint64, positions []int64) (n int) {
-	if t.hoff < 0 || len(positions) == 0 {
-		return 0
-	}
-	buffered := t.buffered()
-	tailPos := t.hoff + 1 - int64(buffered)
-	rear := t.front - buffered
-	if rear >= 0 {
-		rear -= len(t.data)
-	}
-	// get the slot for the hash
-	pos := t.t[h&t.mask] - 1
-	delta := pos - tailPos
-	for {
-		if delta < 0 {
-			return n
-		}
-		positions[n] = tailPos + delta
-		n++
-		if n >= len(positions) {
-			return n
-		}
-		i := rear + int(delta)
-		if i < 0 {
-			i += len(t.data)
-		}
-		u := t.data[i]
-		if u == 0 {
-			return n
-		}
-		delta -= int64(u)
-	}
+	return getMatches(t.t, t.data, t.front, t.mask, t.hoff, h, positions)
 }
 
 // hash computes the rolling hash for the word stored in p. For correct
 // results its length must be equal to t.wordLen.
+func ror(x uint64, s uint) uint64 {
+	return (x >> s) | (x << (64 - s))
+}
+
 func (t *hashTable) hash(p []byte) uint64 {
-	var h uint64
-	for _, b := range p {
-		h = t.hr.RollByte(b)
+	h := hash.HashValues[p[0]]
+	switch t.wordLen {
+	case 4:
+		h = ror(h, 1) ^ hash.HashValues[p[1]]
+		h = ror(h, 1) ^ hash.HashValues[p[2]]
+		h = ror(h, 1) ^ hash.HashValues[p[3]]
+	case 3:
+		h = ror(h, 1) ^ hash.HashValues[p[1]]
+		h = ror(h, 1) ^ hash.HashValues[p[2]]
+	case 2:
+		h = ror(h, 1) ^ hash.HashValues[p[1]]
 	}
 	return h
 }
@@ -247,23 +254,20 @@ func (t *hashTable) Matches(p []byte, positions []int64) int {
 }
 
 // NextOp identifies the next operation using the hash table.
-//
-// TODO: Use all repetitions to find matches.
 func (t *hashTable) NextOp(rep [4]uint32) operation {
-	// get positions
 	data := t.dict.data[:maxMatchLen]
 	n, _ := t.dict.buf.Peek(data)
 	data = data[:n]
+	
 	var p []int64
 	if n < t.wordLen {
 		p = t.p[:0]
 	} else {
 		p = t.p[:maxMatches]
-		n = t.Matches(data[:t.wordLen], p)
-		p = p[:n]
+		k := t.Matches(data[:t.wordLen], p)
+		p = p[:k]
 	}
 
-	// convert positions in potential distances
 	head := t.dict.head
 	dists := append(t.distances[:0], 1, 2, 3, 4, 5, 6, 7, 8)
 	for _, pos := range p {
@@ -273,50 +277,23 @@ func (t *hashTable) NextOp(rep [4]uint32) operation {
 		}
 	}
 
-	// check distances
-	var m match
+	validDists := dists[:0]
 	dictLen := t.dict.DictLen()
 	for _, dist := range dists {
-		if dist > dictLen {
-			continue
-		}
-
-		// Here comes a trick. We are only interested in matches
-		// that are longer than the matches we have been found
-		// before. So before we test the whole byte sequence at
-		// the given distance, we test the first byte that would
-		// make the match longer. If it doesn't match the byte
-		// to match, we don't to care any longer.
-		i := t.dict.buf.rear - dist + m.n
-		if i < 0 {
-			i += len(t.dict.buf.data)
-		}
-		if t.dict.buf.data[i] != data[m.n] {
-			// We can't get a longer match. Jump to the next
-			// distance.
-			continue
-		}
-
-		n := t.dict.buf.matchLen(dist, data)
-		switch n {
-		case 0:
-			continue
-		case 1:
-			if uint32(dist-minDistance) != rep[0] {
-				continue
-			}
-		}
-		if n > m.n {
-			m = match{int64(dist), n}
-			if n == len(data) {
-				// No better match will be found.
-				break
-			}
+		if dist <= dictLen {
+			validDists = append(validDists, dist)
 		}
 	}
 
-	if m.n == 0 {
-		return lit{data[0]}
+	if len(data) >= 5 {
+		nextIdx := t.hash(data[1:5]) & t.mask
+		prefetch(unsafe.Pointer(&t.t[nextIdx]))
 	}
-	return m
+
+	bestDist, bestLen := findBestMatch(t.dict.buf.data, t.dict.buf.rear, data, validDists, rep[0])
+
+	if bestLen == 0 {
+		return operation{distance: 0, n: 1, b: data[0]}
+	}
+	return operation{distance: int64(bestDist), n: bestLen}
 }

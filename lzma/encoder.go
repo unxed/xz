@@ -100,7 +100,7 @@ func (e *encoder) Reopen(bw io.ByteWriter) error {
 }
 
 // writeLiteral writes a literal into the LZMA stream
-func (e *encoder) writeLiteral(l lit) error {
+func (e *encoder) writeLiteral(b byte) error {
 	var err error
 	state, state2, _ := e.state.states(e.dict.Pos())
 	if err = e.state.isMatch[state2].Encode(e.re, 0); err != nil {
@@ -108,7 +108,7 @@ func (e *encoder) writeLiteral(l lit) error {
 	}
 	litState := e.state.litState(e.dict.ByteAt(1), e.dict.Pos())
 	match := e.dict.ByteAt(int(e.state.rep[0]) + 1)
-	err = e.state.litCodec.Encode(e.re, l.b, state, match, litState)
+	err = e.state.litCodec.Encode(e.re, b, state, match, litState)
 	if err != nil {
 		return err
 	}
@@ -126,17 +126,17 @@ func iverson(ok bool) uint32 {
 }
 
 // writeMatch writes a repetition operation into the operation stream
-func (e *encoder) writeMatch(m match) error {
+func (e *encoder) writeMatch(distance int64, n int) error {
 	var err error
-	if !(minDistance <= m.distance && m.distance <= maxDistance) {
-		panic(fmt.Errorf("match distance %d out of range", m.distance))
+	if !(minDistance <= distance && distance <= maxDistance) {
+		panic(fmt.Errorf("match distance %d out of range", distance))
 	}
-	dist := uint32(m.distance - minDistance)
-	if !(minMatchLen <= m.n && m.n <= maxMatchLen) &&
-		!(dist == e.state.rep[0] && m.n == 1) {
+	dist := uint32(distance - minDistance)
+	if !(minMatchLen <= n && n <= maxMatchLen) &&
+		!(dist == e.state.rep[0] && n == 1) {
 		panic(fmt.Errorf(
 			"match length %d out of range; dist %d rep[0] %d",
-			m.n, dist, e.state.rep[0]))
+			n, dist, e.state.rep[0]))
 	}
 	state, state2, posState := e.state.states(e.dict.Pos())
 	if err = e.state.isMatch[state2].Encode(e.re, 1); err != nil {
@@ -152,16 +152,16 @@ func (e *encoder) writeMatch(m match) error {
 	if err = e.state.isRep[state].Encode(e.re, b); err != nil {
 		return err
 	}
-	n := uint32(m.n - minMatchLen)
+	matchLenOffset := uint32(n - minMatchLen)
 	if b == 0 {
 		// simple match
 		e.state.rep[3], e.state.rep[2], e.state.rep[1], e.state.rep[0] =
 			e.state.rep[2], e.state.rep[1], e.state.rep[0], dist
 		e.state.updateStateMatch()
-		if err = e.state.lenCodec.Encode(e.re, n, posState); err != nil {
+		if err = e.state.lenCodec.Encode(e.re, matchLenOffset, posState); err != nil {
 			return err
 		}
-		return e.state.distCodec.Encode(e.re, dist, n)
+		return e.state.distCodec.Encode(e.re, dist, matchLenOffset)
 	}
 	b = iverson(g != 0)
 	if err = e.state.isRepG0[state].Encode(e.re, b); err != nil {
@@ -169,7 +169,7 @@ func (e *encoder) writeMatch(m match) error {
 	}
 	if b == 0 {
 		// g == 0
-		b = iverson(m.n != 1)
+		b = iverson(n != 1)
 		if err = e.state.isRepG0Long[state2].Encode(e.re, b); err != nil {
 			return err
 		}
@@ -199,7 +199,7 @@ func (e *encoder) writeMatch(m match) error {
 		e.state.rep[0] = dist
 	}
 	e.state.updateStateRep()
-	return e.state.repLenCodec.Encode(e.re, n, posState)
+	return e.state.repLenCodec.Encode(e.re, matchLenOffset, posState)
 }
 
 // writeOp writes a single operation to the range encoder. The function
@@ -209,14 +209,10 @@ func (e *encoder) writeOp(op operation) error {
 	if e.re.Available() < int64(e.margin) {
 		return ErrLimit
 	}
-	switch x := op.(type) {
-	case lit:
-		return e.writeLiteral(x)
-	case match:
-		return e.writeMatch(x)
-	default:
-		panic("unexpected operation")
+	if op.distance == 0 {
+		return e.writeLiteral(op.b)
 	}
+	return e.writeMatch(op.distance, op.n)
 }
 
 // compress compressed data from the dictionary buffer. If the flag all
@@ -241,7 +237,7 @@ func (e *encoder) compress(flags compressFlags) error {
 }
 
 // eosMatch is a pseudo operation that indicates the end of the stream.
-var eosMatch = match{distance: maxDistance, n: minMatchLen}
+var eosMatch = operation{distance: maxDistance, n: minMatchLen}
 
 // Close terminates the LZMA stream. If requested the end-of-stream
 // marker will be written. If the byte writer limit has been or will be
@@ -253,7 +249,7 @@ func (e *encoder) Close() error {
 		return err
 	}
 	if e.marker {
-		if err := e.writeMatch(eosMatch); err != nil {
+		if err := e.writeMatch(eosMatch.distance, eosMatch.n); err != nil {
 			return err
 		}
 	}

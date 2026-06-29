@@ -45,3 +45,18 @@ func TestHashTable(t *testing.T) {
 		}
 	}
 }
+func BenchmarkHashTableWrite(b *testing.B) {
+	ht, err := newHashTable(1024*1024, 4)
+	if err != nil {
+		b.Fatal(err)
+	}
+	data := make([]byte, 65536)
+	for i := range data {
+		data[i] = byte(i)
+	}
+	b.SetBytes(int64(len(data)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ht.Write(data)
+	}
+}

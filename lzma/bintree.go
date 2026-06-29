@@ -405,8 +405,8 @@ type matchParams struct {
 	stopShorter bool
 }
 
-func (t *binTree) match(m match, distIter func() (int, bool), p matchParams,
-) (r match, checked int, accepted bool) {
+func (t *binTree) match(m operation, distIter func() (int, bool), p matchParams,
+) (r operation, checked int, accepted bool) {
 	buf := &t.dict.buf
 	for {
 		if checked >= p.check {
@@ -446,7 +446,7 @@ func (t *binTree) match(m match, distIter func() (int, bool), p matchParams,
 		if n < m.n || (n == m.n && int64(dist) >= m.distance) {
 			continue
 		}
-		m = match{int64(dist), n}
+		m = operation{distance: int64(dist), n: n}
 		if n >= p.nAccept {
 			return m, checked, true
 		}
@@ -462,7 +462,7 @@ func (t *binTree) NextOp(rep [4]uint32) operation {
 	t.data = t.data[:n]
 
 	var (
-		m                  match
+		m                  operation
 		x, u, v            uint32
 		iterPred, iterSucc func() (int, bool)
 	)
@@ -526,7 +526,7 @@ func (t *binTree) NextOp(rep [4]uint32) operation {
 	m, _, _ = t.match(m, iterPred, p)
 end:
 	if m.n == 0 {
-		return lit{t.data[0]}
+		return operation{distance: 0, n: 1, b: t.data[0]}
 	}
 	return m
 }

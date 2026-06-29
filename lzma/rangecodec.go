@@ -14,6 +14,8 @@ import (
 // overflows.
 type rangeEncoder struct {
 	lbw      *LimitedByteWriter
+	outBuf   []byte
+	outPos   int
 	nrange   uint32
 	low      uint64
 	cacheLen int64
@@ -31,8 +33,19 @@ func newRangeEncoder(bw io.ByteWriter) (re *rangeEncoder, err error) {
 	}
 	return &rangeEncoder{
 		lbw:      lbw,
+		outBuf:   make([]byte, 65536),
 		nrange:   0xffffffff,
 		cacheLen: 1}, nil
+}
+
+func (e *rangeEncoder) flushBuffer() error {
+	for i := 0; i < e.outPos; i++ {
+		if err := e.lbw.BW.WriteByte(e.outBuf[i]); err != nil {
+			return err
+		}
+	}
+	e.outPos = 0
+	return nil
 }
 
 // Available returns the number of bytes that still can be written. The
@@ -46,6 +59,20 @@ func (e *rangeEncoder) Available() int64 {
 // returned if the limit is reached. The written byte will be counted if
 // the underlying writer doesn't return an error.
 func (e *rangeEncoder) writeByte(c byte) error {
+	if e.outBuf != nil {
+		if e.outPos >= len(e.outBuf) {
+			if err := e.flushBuffer(); err != nil {
+				return err
+			}
+		}
+		if e.lbw.N <= 0 {
+			return ErrLimit
+		}
+		e.outBuf[e.outPos] = c
+		e.outPos++
+		e.lbw.N--
+		return nil
+	}
 	if e.Available() < 1 {
 		return ErrLimit
 	}
@@ -57,34 +84,83 @@ func (e *rangeEncoder) DirectEncodeBit(b uint32) error {
 	e.nrange >>= 1
 	e.low += uint64(e.nrange) & (0 - (uint64(b) & 1))
 
-	// normalize
-	const top = 1 << 24
-	if e.nrange >= top {
+	if e.nrange >= (1 << 24) {
 		return nil
 	}
 	e.nrange <<= 8
+	if e.outBuf != nil {
+		if uint32(e.low) < 0xff000000 || (e.low>>32) != 0 {
+			tmp := e.cache
+			if e.cacheLen == 1 {
+				e.outBuf[e.outPos] = tmp + byte(e.low>>32)
+				e.outPos++
+				e.lbw.N--
+				e.cacheLen = 0
+			} else {
+				for {
+					e.outBuf[e.outPos] = tmp + byte(e.low>>32)
+					e.outPos++
+					e.lbw.N--
+					tmp = 0xff
+					e.cacheLen--
+					if e.cacheLen <= 0 {
+						break
+					}
+				}
+			}
+			e.cache = byte(uint32(e.low) >> 24)
+		}
+		e.cacheLen++
+		e.low = uint64(uint32(e.low) << 8)
+		return nil
+	}
 	return e.shiftLow()
 }
 
 // EncodeBit encodes the least significant bit of b. The p value will be
 // updated by the function depending on the bit encoded.
 func (e *rangeEncoder) EncodeBit(b uint32, p *prob) error {
-	bound := p.bound(e.nrange)
+	probVal := uint32(*p)
+	bound := (e.nrange >> 11) * probVal
 	if b&1 == 0 {
 		e.nrange = bound
-		p.inc()
+		*p = prob(probVal + (2048-probVal)>>5)
 	} else {
 		e.low += uint64(bound)
 		e.nrange -= bound
-		p.dec()
+		*p = prob(probVal - (probVal >> 5))
 	}
 
-	// normalize
-	const top = 1 << 24
-	if e.nrange >= top {
+	if e.nrange >= (1 << 24) {
 		return nil
 	}
 	e.nrange <<= 8
+	if e.outBuf != nil {
+		if uint32(e.low) < 0xff000000 || (e.low>>32) != 0 {
+			tmp := e.cache
+			if e.cacheLen == 1 {
+				e.outBuf[e.outPos] = tmp + byte(e.low>>32)
+				e.outPos++
+				e.lbw.N--
+				e.cacheLen = 0
+			} else {
+				for {
+					e.outBuf[e.outPos] = tmp + byte(e.low>>32)
+					e.outPos++
+					e.lbw.N--
+					tmp = 0xff
+					e.cacheLen--
+					if e.cacheLen <= 0 {
+						break
+					}
+				}
+			}
+			e.cache = byte(uint32(e.low) >> 24)
+		}
+		e.cacheLen++
+		e.low = uint64(uint32(e.low) << 8)
+		return nil
+	}
 	return e.shiftLow()
 }
 
@@ -94,6 +170,9 @@ func (e *rangeEncoder) Close() error {
 		if err := e.shiftLow(); err != nil {
 			return err
 		}
+	}
+	if e.outBuf != nil {
+		return e.flushBuffer()
 	}
 	return nil
 }

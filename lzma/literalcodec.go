@@ -39,6 +39,12 @@ func (c *literalCodec) init(lc, lp int) {
 func (c *literalCodec) Encode(e *rangeEncoder, s byte,
 	state uint32, match byte, litState uint32,
 ) (err error) {
+	if e.outBuf != nil && e.outPos >= len(e.outBuf)-100 {
+		if err := e.flushBuffer(); err != nil {
+			return err
+		}
+	}
+
 	k := litState * 0x300
 	probs := c.probs[k : k+0x300]
 	symbol := uint32(1)
@@ -51,9 +57,44 @@ func (c *literalCodec) Encode(e *rangeEncoder, s byte,
 			bit := (r >> 7) & 1
 			r <<= 1
 			i := ((1 + matchBit) << 8) | symbol
-			if err = probs[i].Encode(e, bit); err != nil {
-				return
+
+			probVal := uint32(probs[i])
+			bound := (e.nrange >> 11) * probVal
+			if bit == 0 {
+				e.nrange = bound
+				probs[i] = prob(probVal + (2048-probVal)>>5)
+			} else {
+				e.low += uint64(bound)
+				e.nrange -= bound
+				probs[i] = prob(probVal - (probVal >> 5))
 			}
+			if e.nrange < (1 << 24) {
+				e.nrange <<= 8
+				if uint32(e.low) < 0xff000000 || (e.low>>32) != 0 {
+					tmp := e.cache
+					if e.cacheLen == 1 {
+						e.outBuf[e.outPos] = tmp + byte(e.low>>32)
+						e.outPos++
+						e.lbw.N--
+						e.cacheLen = 0
+					} else {
+						for {
+							e.outBuf[e.outPos] = tmp + byte(e.low>>32)
+							e.outPos++
+							e.lbw.N--
+							tmp = 0xff
+							e.cacheLen--
+							if e.cacheLen <= 0 {
+								break
+							}
+						}
+					}
+					e.cache = byte(uint32(e.low) >> 24)
+				}
+				e.cacheLen++
+				e.low = uint64(uint32(e.low) << 8)
+			}
+
 			symbol = (symbol << 1) | bit
 			if matchBit != bit {
 				break
@@ -66,9 +107,44 @@ func (c *literalCodec) Encode(e *rangeEncoder, s byte,
 	for symbol < 0x100 {
 		bit := (r >> 7) & 1
 		r <<= 1
-		if err = probs[symbol].Encode(e, bit); err != nil {
-			return
+
+		probVal := uint32(probs[symbol])
+		bound := (e.nrange >> 11) * probVal
+		if bit == 0 {
+			e.nrange = bound
+			probs[symbol] = prob(probVal + (2048-probVal)>>5)
+		} else {
+			e.low += uint64(bound)
+			e.nrange -= bound
+			probs[symbol] = prob(probVal - (probVal >> 5))
 		}
+		if e.nrange < (1 << 24) {
+			e.nrange <<= 8
+			if uint32(e.low) < 0xff000000 || (e.low>>32) != 0 {
+				tmp := e.cache
+				if e.cacheLen == 1 {
+					e.outBuf[e.outPos] = tmp + byte(e.low>>32)
+					e.outPos++
+					e.lbw.N--
+					e.cacheLen = 0
+				} else {
+					for {
+						e.outBuf[e.outPos] = tmp + byte(e.low>>32)
+						e.outPos++
+						e.lbw.N--
+						tmp = 0xff
+						e.cacheLen--
+						if e.cacheLen <= 0 {
+							break
+						}
+					}
+				}
+				e.cache = byte(uint32(e.low) >> 24)
+			}
+			e.cacheLen++
+			e.low = uint64(uint32(e.low) << 8)
+		}
+
 		symbol = (symbol << 1) | bit
 	}
 	return nil

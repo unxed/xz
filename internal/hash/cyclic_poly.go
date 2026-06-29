@@ -179,3 +179,6 @@ var hash = [256]uint64{
 	0xa25e40c03bbc36ad, 0x6b6e5c14ce88465b,
 	0x4378ffe93e1528c5, 0x94ca92a17118e2d2,
 }
+
+// HashValues is exported for Go and ASM use.
+var HashValues = hash
