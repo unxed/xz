@@ -204,3 +204,114 @@ func BenchmarkParallelLZMA2(b *testing.B) {
 		}
 	})
 }
+func TestWriter2_EntropyDetection(t *testing.T) {
+	// Generate 5MB of purely random data
+	randData := make([]byte, 5*1024*1024)
+	rnd := rand.New(rand.NewSource(42))
+	rnd.Read(randData)
+
+	var buf bytes.Buffer
+	w, err := Writer2Config{
+		DictCap:     1024 * 1024,
+		Concurrency: 2,
+	}.NewWriter2(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := w.Write(randData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != len(randData) {
+		t.Fatalf("wrote %d; want %d", n, len(randData))
+	}
+
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify size: since it is uncompressible, it should be slightly larger than 5MB due to LZMA2 headers.
+	compressedSize := buf.Len()
+	if compressedSize < len(randData) {
+		t.Errorf("expected uncompressed chunks to be >= original size, got %d", compressedSize)
+	}
+
+	// Decompress and verify
+	r, err := Reader2Config{DictCap: 1024 * 1024}.NewReader2(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+
+	decompressed, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !bytes.Equal(randData, decompressed) {
+		t.Fatal("decompressed random data mismatch")
+	}
+}
+
+func TestWriter2_StateTransitions(t *testing.T) {
+	// Block size is dictated by DictCap. Let's force DictCap = 1MB.
+	// Block 1 (1MB): Pure random. Should be detected as uncompressible.
+	// Block 2 (1MB): Pure zeros. Should be detected as compressible.
+	// Block 3 (1MB): Pure random. Should be detected as uncompressible.
+	blockSize := 1024 * 1024
+
+	block1 := make([]byte, blockSize)
+	rnd := rand.New(rand.NewSource(123))
+	rnd.Read(block1)
+
+	block2 := make([]byte, blockSize) // all zeros
+
+	block3 := make([]byte, blockSize)
+	rnd.Read(block3)
+
+	payload := append(append(block1, block2...), block3...)
+
+	var buf bytes.Buffer
+	w, err := Writer2Config{
+		DictCap:     blockSize,
+		Concurrency: 2,
+	}.NewWriter2(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := w.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Total uncompressed = 3MB.
+	// Block 1: uncompressed (~1MB)
+	// Block 2: highly compressed (should be under 50KB)
+	// Block 3: uncompressed (~1MB)
+	// Total compressed size should be around ~2MB.
+	compressedSize := buf.Len()
+	maxExpected := 2*1024*1024 + 100*1024 // 2.1MB
+	if compressedSize > maxExpected {
+		t.Errorf("compression transition failed: expected size < %d, got %d", maxExpected, compressedSize)
+	}
+
+	// Check correctness
+	r, err := Reader2Config{DictCap: blockSize}.NewReader2(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+
+	decompressed, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !bytes.Equal(payload, decompressed) {
+		t.Fatal("decompressed data mismatch")
+	}
+}
