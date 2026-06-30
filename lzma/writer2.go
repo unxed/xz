@@ -75,11 +75,12 @@ func (c *Writer2Config) Verify() error {
 }
 
 type chunkJob struct {
-	seq   uint64
-	data  []byte
-	out   *bytes.Buffer
-	err   error
-	reset bool
+	seq     uint64
+	data    []byte
+	out     *bytes.Buffer
+	err     error
+	reset   bool
+	minimal bool
 }
 
 var chunkDataPool = sync.Pool{
@@ -130,37 +131,28 @@ func (c Writer2Config) NewWriter2(lzma2 io.Writer) (*Writer2, error) {
 		config: c,
 	}
 
-	if c.Concurrency > 1 {
-		w.parallel = true
-		w.blockSize = c.DictCap
-		if w.blockSize < 1<<20 {
-			w.blockSize = 1 << 20
-		}
-		if w.blockSize > 64<<20 {
-			w.blockSize = 64 << 20
-		}
-
-		w.jobs = make(chan *chunkJob, c.Concurrency*2)
-		w.outCh = make(chan *chunkJob, c.Concurrency*2)
-		w.coordDone = make(chan struct{})
-
-		go w.coordinator()
-
-		for i := 0; i < c.Concurrency; i++ {
-			w.wg.Add(1)
-			go w.worker()
-		}
-
-		runtime.SetFinalizer(w, func(obj *Writer2) {
-			obj.Destroy()
-		})
-	} else {
-		seq, err := newSeqWriter2(lzma2, c)
-		if err != nil {
-			return nil, err
-		}
-		w.seqW = seq
+	w.blockSize = c.DictCap
+	if w.blockSize < 1<<20 {
+		w.blockSize = 1 << 20
 	}
+	if w.blockSize > 64<<20 {
+		w.blockSize = 64 << 20
+	}
+
+	w.jobs = make(chan *chunkJob, c.Concurrency*2)
+	w.outCh = make(chan *chunkJob, c.Concurrency*2)
+	w.coordDone = make(chan struct{})
+
+	go w.coordinator()
+
+	for i := 0; i < c.Concurrency; i++ {
+		w.wg.Add(1)
+		go w.worker()
+	}
+
+	runtime.SetFinalizer(w, func(obj *Writer2) {
+		obj.Destroy()
+	})
 
 	return w, nil
 }
@@ -184,12 +176,10 @@ func (w *Writer2) setError(err error) {
 // Destroy tears down the background worker goroutines. This is primarily
 // called automatically via a runtime finalizer during garbage collection.
 func (w *Writer2) Destroy() {
-	if w.parallel {
-		close(w.jobs)
-		w.wg.Wait()
-		close(w.outCh)
-		<-w.coordDone
-	}
+	close(w.jobs)
+	w.wg.Wait()
+	close(w.outCh)
+	<-w.coordDone
 }
 
 // Reset resets the state of the writer so it can be reused with a new output stream.
@@ -202,25 +192,13 @@ func (w *Writer2) Reset(lzma2 io.Writer) error {
 	w.w = lzma2
 	w.closed = false
 
-	if w.parallel {
-		if cap(w.inBuf) > 0 {
-			chunkDataPool.Put(w.inBuf)
-		}
-		w.inBuf = nil
-		w.nextSeq = 0
-		w.outCh <- &chunkJob{reset: true}
-	} else {
-		w.seqW.w = lzma2
-		w.seqW.cstate = start
-		w.seqW.ctype = start.defaultChunkType()
-		w.seqW.start.Reset()
-
-		w.seqW.encoder.state.deepcopy(w.seqW.start)
-		w.seqW.encoder.dict.Reset()
-		w.seqW.buf.Reset()
-		w.seqW.lbw.N = maxCompressed
-		w.seqW.encoder.Reopen(&w.seqW.lbw)
+	if cap(w.inBuf) > 0 {
+		chunkDataPool.Put(w.inBuf)
 	}
+	w.inBuf = nil
+	w.nextSeq = 0
+	w.outCh <- &chunkJob{reset: true}
+
 	return nil
 }
 
@@ -229,46 +207,49 @@ func (w *Writer2) Write(p []byte) (n int, err error) {
 	if w.closed {
 		return 0, errClosed
 	}
-	if w.parallel {
-		if err := w.getError(); err != nil {
-			return 0, err
-		}
-		n = len(p)
-		for len(p) > 0 {
-			if w.inBuf == nil {
-				if v := chunkDataPool.Get(); v != nil {
-					w.inBuf = v.([]byte)[:0]
-				} else {
-					w.inBuf = make([]byte, 0, w.blockSize)
-				}
-			}
-			space := w.blockSize - len(w.inBuf)
-			if space > len(p) {
-				space = len(p)
-			}
-			w.inBuf = append(w.inBuf, p[:space]...)
-			p = p[space:]
-
-			if len(w.inBuf) == w.blockSize {
-				w.flushParallelBlock()
-				if err := w.getError(); err != nil {
-					return n - len(p), err
-				}
-			}
-		}
-		return n, nil
+	if err := w.getError(); err != nil {
+		return 0, err
 	}
-	return w.seqW.Write(p)
+	n = len(p)
+	for len(p) > 0 {
+		if w.inBuf == nil {
+			if v := chunkDataPool.Get(); v != nil {
+				w.inBuf = v.([]byte)[:0]
+			} else {
+				w.inBuf = make([]byte, 0, w.blockSize)
+			}
+		}
+		space := w.blockSize - len(w.inBuf)
+		if space > len(p) {
+			space = len(p)
+		}
+		w.inBuf = append(w.inBuf, p[:space]...)
+		p = p[space:]
+
+		if len(w.inBuf) == w.blockSize {
+			w.flushParallelBlock()
+			if err := w.getError(); err != nil {
+				return n - len(p), err
+			}
+		}
+	}
+	return n, nil
 }
 
 func (w *Writer2) flushParallelBlock() {
 	if len(w.inBuf) == 0 {
 		return
 	}
+
+	estRatio := fastEstimateCompressibility(w.inBuf)
+	isMinimal := estRatio >= 0.99
+
 	job := &chunkJob{
-		seq:  w.nextSeq,
-		data: w.inBuf,
+		seq:     w.nextSeq,
+		data:    w.inBuf,
+		minimal: isMinimal,
 	}
+
 	w.nextSeq++
 	w.inBuf = nil // Hand over ownership to the worker
 	w.pendingWg.Add(1)
@@ -280,11 +261,8 @@ func (w *Writer2) Flush() error {
 	if w.closed {
 		return errClosed
 	}
-	if w.parallel {
-		w.flushParallelBlock()
-		return w.getError()
-	}
-	return w.seqW.Flush()
+	w.flushParallelBlock()
+	return w.getError()
 }
 
 // Close terminates the LZMA2 stream with an EOS chunk.
@@ -294,16 +272,10 @@ func (w *Writer2) Close() error {
 	}
 	w.closed = true
 
-	if w.parallel {
-		w.flushParallelBlock()
-		w.pendingWg.Wait()
-		if err := w.getError(); err != nil {
-			return err
-		}
-	} else {
-		if err := w.seqW.Flush(); err != nil {
-			return err
-		}
+	w.flushParallelBlock()
+	w.pendingWg.Wait()
+	if err := w.getError(); err != nil {
+		return err
 	}
 
 	// Write zero byte EOS chunk
@@ -348,6 +320,69 @@ func (w *Writer2) coordinator() {
 	close(w.coordDone)
 }
 
+// fastEstimateCompressibility estimates the compression ratio of a block.
+// It uses a very fast LZ4-style scan to count matching bytes.
+// Returns a ratio proxy where >= 0.98 means heavily uncompressible.
+func fastEstimateCompressibility(data []byte) float64 {
+	if len(data) < 16 {
+		return 1.0
+	}
+	const hashBits = 14
+	const hashSize = 1 << hashBits
+	table := make([]uint32, hashSize)
+
+	matchedBytes := 0
+	i := 0
+	for i < len(data)-4 {
+		h := (uint32(data[i]) | uint32(data[i+1])<<8 | uint32(data[i+2])<<16 | uint32(data[i+3])<<24) * 0x9E3779B1
+		idx := h >> (32 - hashBits)
+
+		prev := int(table[idx])
+		table[idx] = uint32(i + 1)
+
+		if prev > 0 {
+			p := prev - 1
+			if data[p] == data[i] && data[p+1] == data[i+1] && data[p+2] == data[i+2] && data[p+3] == data[i+3] {
+				matchLen := 4
+				for i+matchLen < len(data) && data[p+matchLen] == data[i+matchLen] {
+					matchLen++
+				}
+				matchedBytes += matchLen
+				i += matchLen
+				continue
+			}
+		}
+		i += 2
+	}
+
+	return float64(len(data)-matchedBytes) / float64(len(data))
+}
+
+// emitUncompressedLZMA2 directly bypasses the Range Encoder and emits raw LZMA2 Uncompressed chunks.
+func emitUncompressedLZMA2(out *bytes.Buffer, data []byte) error {
+	first := true
+	n := 0
+	for n < len(data) {
+		m := len(data) - n
+		if m > 65536 {
+			m = 65536
+		}
+		header := make([]byte, 3)
+		if first {
+			header[0] = 1 // cUD (Uncompressed, Reset Dictionary)
+			first = false
+		} else {
+			header[0] = 2 // cU (Uncompressed, Keep Dictionary)
+		}
+		header[1] = byte((m - 1) >> 8)
+		header[2] = byte(m - 1)
+		out.Write(header)
+		out.Write(data[n : n+m])
+		n += m
+	}
+	return nil
+}
+
 func (w *Writer2) worker() {
 	defer w.wg.Done()
 
@@ -390,44 +425,56 @@ func (w *Writer2) worker() {
 
 		job.out = new(bytes.Buffer)
 
-		seqW.w = job.out
-		seqW.cstate = start
-		seqW.ctype = start.defaultChunkType()
-		seqW.start.Reset()
+		compressNormally := func() error {
+			job.out.Reset()
+			seqW.w = job.out
+			seqW.cstate = start
+			seqW.ctype = start.defaultChunkType()
+			seqW.start.Reset()
 
-		seqW.encoder.state.deepcopy(seqW.start)
-		seqW.encoder.dict.Reset()
-		seqW.buf.Reset()
-		seqW.lbw.N = maxCompressed
-		seqW.encoder.Reopen(&seqW.lbw)
+			seqW.encoder.state.deepcopy(seqW.start)
+			seqW.encoder.dict.Reset()
+			seqW.buf.Reset()
+			seqW.lbw.N = maxCompressed
+			seqW.encoder.Reopen(&seqW.lbw)
 
-		n := 0
-		for n < len(job.data) {
-			m := maxUncompressed - seqW.written()
-			if m <= 0 {
-				panic("lzma: maxUncompressed reached")
-			}
-			var q []byte
-			if n+m < len(job.data) {
-				q = job.data[n : n+m]
-			} else {
-				q = job.data[n:]
-			}
-			k, e := seqW.encoder.Write(q)
-			n += k
-			if e != nil && e != ErrLimit {
-				job.err = e
-				break
-			}
-			if e == ErrLimit || k == m {
-				job.err = seqW.flushChunk()
-				if job.err != nil {
+			n := 0
+			var jobErr error
+			for n < len(job.data) {
+				m := maxUncompressed - seqW.written()
+				if m <= 0 {
+					panic("lzma: maxUncompressed reached")
+				}
+				var q []byte
+				if n+m < len(job.data) {
+					q = job.data[n : n+m]
+				} else {
+					q = job.data[n:]
+				}
+				k, e := seqW.encoder.Write(q)
+				n += k
+				if e != nil && e != ErrLimit {
+					jobErr = e
 					break
 				}
+				if e == ErrLimit || k == m {
+					jobErr = seqW.flushChunk()
+					if jobErr != nil {
+						break
+					}
+				}
 			}
+			if jobErr == nil {
+				jobErr = seqW.Flush()
+			}
+			return jobErr
 		}
-		if job.err == nil {
-			job.err = seqW.Flush()
+
+		if job.minimal {
+			job.out.Reset()
+			job.err = emitUncompressedLZMA2(job.out, job.data)
+		} else {
+			job.err = compressNormally()
 		}
 
 		if cap(job.data) > 0 {

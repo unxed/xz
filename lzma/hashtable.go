@@ -63,6 +63,7 @@ type hashTable struct {
 	cpI int
 	cpMask int
 	cpShift uint
+	minimalMode bool
 
 	// preallocated slices
 	p         [maxMatches]int64
@@ -113,6 +114,9 @@ func newHashTable(capacity int, wordLen int) (t *hashTable, err error) {
 }
 
 func (t *hashTable) SetDict(d *encoderDict) { t.dict = d }
+
+// SetMinimalMode enables or disables the fast, minimal-compression mode.
+func (t *hashTable) SetMinimalMode(minimal bool) { t.minimalMode = minimal }
 // Reset clears the hash table and offsets for reuse.
 func (t *hashTable) Reset() {
 	for i := range t.t {
@@ -260,16 +264,23 @@ func (t *hashTable) NextOp(rep [4]uint32) operation {
 	data = data[:n]
 	
 	var p []int64
+	numMatches := maxMatches
+	if t.minimalMode {
+		numMatches = 1
+	}
 	if n < t.wordLen {
 		p = t.p[:0]
 	} else {
-		p = t.p[:maxMatches]
+		p = t.p[:numMatches]
 		k := t.Matches(data[:t.wordLen], p)
 		p = p[:k]
 	}
 
 	head := t.dict.head
 	dists := append(t.distances[:0], 1, 2, 3, 4, 5, 6, 7, 8)
+	if t.minimalMode {
+		dists = dists[:0]
+	}
 	for _, pos := range p {
 		dis := int(head - pos)
 		if dis > shortDists {

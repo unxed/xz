@@ -16,6 +16,7 @@ type matcher interface {
 	io.Writer
 	SetDict(d *encoderDict)
 	NextOp(rep [4]uint32) operation
+	SetMinimalMode(minimal bool)
 }
 
 // encoderDict provides the dictionary of the encoder. It includes an
