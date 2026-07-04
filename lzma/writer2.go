@@ -89,6 +89,19 @@ var chunkDataPool = sync.Pool{
 	},
 }
 
+var outBufPool = sync.Pool{
+	New: func() interface{} {
+		return new(bytes.Buffer)
+	},
+}
+
+var estimateTablePool = sync.Pool{
+	New: func() interface{} {
+		t := make([]uint32, 1<<14)
+		return &t
+	},
+}
+
 // Writer2 supports the creation of an LZMA2 stream. It natively supports
 // parallel block compression to maximize multi-core CPU utilization.
 type Writer2 struct {
@@ -309,6 +322,7 @@ func (w *Writer2) coordinator() {
 						w.setError(err)
 					}
 				}
+				outBufPool.Put(j.out)
 				delete(results, writeSeq)
 				writeSeq++
 				w.pendingWg.Done()
@@ -328,8 +342,10 @@ func fastEstimateCompressibility(data []byte) float64 {
 		return 1.0
 	}
 	const hashBits = 14
-	const hashSize = 1 << hashBits
-	table := make([]uint32, hashSize)
+	tablePtr := estimateTablePool.Get().(*[]uint32)
+	table := *tablePtr
+	clear(table) // Используем встроенную оптимизированную функцию Go 1.21+
+	defer estimateTablePool.Put(tablePtr)
 
 	matchedBytes := 0
 	i := 0
@@ -349,10 +365,15 @@ func fastEstimateCompressibility(data []byte) float64 {
 				}
 				matchedBytes += matchLen
 				i += matchLen
+
+				// Ранний выход, если мы уже точно знаем, что данные неплохо сжимаются
+				if matchedBytes > len(data)/64 {
+					return 0.5 // Возвращаем коэффициент хорошего сжатия
+				}
 				continue
 			}
 		}
-		i += 2
+		i += 4
 	}
 
 	return float64(len(data)-matchedBytes) / float64(len(data))
@@ -423,7 +444,7 @@ func (w *Writer2) worker() {
 			continue
 		}
 
-		job.out = new(bytes.Buffer)
+		job.out = outBufPool.Get().(*bytes.Buffer)
 
 		compressNormally := func() error {
 			job.out.Reset()

@@ -4,6 +4,8 @@
 
 package lzma
 
+import "unsafe"
+
 // literalCodec supports the encoding of literal. It provides 768 probability
 // values per literal state. The upper 512 probabilities are used with the
 // context of a match bit.
@@ -47,8 +49,13 @@ func (c *literalCodec) Encode(e *rangeEncoder, s byte,
 
 	k := litState * 0x300
 	probs := c.probs[k : k+0x300]
+	probsBase := unsafe.Pointer(&probs[0])
 	symbol := uint32(1)
 	r := uint32(s)
+
+	nrange := e.nrange
+	low := e.low
+
 	if state >= 7 {
 		m := uint32(match)
 		for {
@@ -58,28 +65,30 @@ func (c *literalCodec) Encode(e *rangeEncoder, s byte,
 			r <<= 1
 			i := ((1 + matchBit) << 8) | symbol
 
-			probVal := uint32(probs[i])
-			bound := (e.nrange >> 11) * probVal
+			probPtr := (*prob)(unsafe.Add(probsBase, i*2))
+			probVal := uint32(*probPtr)
+			bound := (nrange >> 11) * probVal
 			if bit == 0 {
-				e.nrange = bound
-				probs[i] = prob(probVal + (2048-probVal)>>5)
+				nrange = bound
+				*probPtr = prob(probVal + (2048-probVal)>>5)
 			} else {
-				e.low += uint64(bound)
-				e.nrange -= bound
-				probs[i] = prob(probVal - (probVal >> 5))
+				low += uint64(bound)
+				nrange -= bound
+				*probPtr = prob(probVal - (probVal >> 5))
 			}
-			if e.nrange < (1 << 24) {
-				e.nrange <<= 8
-				if uint32(e.low) < 0xff000000 || (e.low>>32) != 0 {
+
+			if nrange < (1 << 24) {
+				nrange <<= 8
+				if uint32(low) < 0xff000000 || (low>>32) != 0 {
 					tmp := e.cache
 					if e.cacheLen == 1 {
-						e.outBuf[e.outPos] = tmp + byte(e.low>>32)
+						e.outBuf[e.outPos] = tmp + byte(low>>32)
 						e.outPos++
 						e.lbw.N--
 						e.cacheLen = 0
 					} else {
 						for {
-							e.outBuf[e.outPos] = tmp + byte(e.low>>32)
+							e.outBuf[e.outPos] = tmp + byte(low>>32)
 							e.outPos++
 							e.lbw.N--
 							tmp = 0xff
@@ -89,10 +98,10 @@ func (c *literalCodec) Encode(e *rangeEncoder, s byte,
 							}
 						}
 					}
-					e.cache = byte(uint32(e.low) >> 24)
+					e.cache = byte(uint32(low) >> 24)
 				}
 				e.cacheLen++
-				e.low = uint64(uint32(e.low) << 8)
+				low = uint64(uint32(low) << 8)
 			}
 
 			symbol = (symbol << 1) | bit
@@ -108,28 +117,30 @@ func (c *literalCodec) Encode(e *rangeEncoder, s byte,
 		bit := (r >> 7) & 1
 		r <<= 1
 
-		probVal := uint32(probs[symbol])
-		bound := (e.nrange >> 11) * probVal
+		probPtr := (*prob)(unsafe.Add(probsBase, symbol*2))
+		probVal := uint32(*probPtr)
+		bound := (nrange >> 11) * probVal
 		if bit == 0 {
-			e.nrange = bound
-			probs[symbol] = prob(probVal + (2048-probVal)>>5)
+			nrange = bound
+			*probPtr = prob(probVal + (2048-probVal)>>5)
 		} else {
-			e.low += uint64(bound)
-			e.nrange -= bound
-			probs[symbol] = prob(probVal - (probVal >> 5))
+			low += uint64(bound)
+			nrange -= bound
+			*probPtr = prob(probVal - (probVal >> 5))
 		}
-		if e.nrange < (1 << 24) {
-			e.nrange <<= 8
-			if uint32(e.low) < 0xff000000 || (e.low>>32) != 0 {
+
+		if nrange < (1 << 24) {
+			nrange <<= 8
+			if uint32(low) < 0xff000000 || (low>>32) != 0 {
 				tmp := e.cache
 				if e.cacheLen == 1 {
-					e.outBuf[e.outPos] = tmp + byte(e.low>>32)
+					e.outBuf[e.outPos] = tmp + byte(low>>32)
 					e.outPos++
 					e.lbw.N--
 					e.cacheLen = 0
 				} else {
 					for {
-						e.outBuf[e.outPos] = tmp + byte(e.low>>32)
+						e.outBuf[e.outPos] = tmp + byte(low>>32)
 						e.outPos++
 						e.lbw.N--
 						tmp = 0xff
@@ -139,14 +150,17 @@ func (c *literalCodec) Encode(e *rangeEncoder, s byte,
 						}
 					}
 				}
-				e.cache = byte(uint32(e.low) >> 24)
+				e.cache = byte(uint32(low) >> 24)
 			}
 			e.cacheLen++
-			e.low = uint64(uint32(e.low) << 8)
+			low = uint64(uint32(low) << 8)
 		}
 
 		symbol = (symbol << 1) | bit
 	}
+
+	e.nrange = nrange
+	e.low = low
 	return nil
 }
 

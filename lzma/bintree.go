@@ -43,6 +43,7 @@ type binTree struct {
 	x uint32
 	// fast mode
 	minimalMode bool
+	litRun      int
 	// preallocated array
 	data []byte
 }
@@ -86,6 +87,7 @@ func (t *binTree) Reset() {
 	t.front = 0
 	t.root = null
 	t.x = 0
+	t.litRun = 0
 }
 
 // WriteByte writes a single byte into the binary tree.
@@ -466,6 +468,21 @@ func (t *binTree) NextOp(rep [4]uint32) operation {
 	}
 	t.data = t.data[:n]
 
+	var skipMask int
+	if t.minimalMode {
+		skipMask = 15
+	} else if t.litRun >= 256 {
+		skipMask = 15
+	} else if t.litRun >= 128 {
+		skipMask = 7
+	} else if t.litRun >= 64 {
+		skipMask = 3
+	}
+	if skipMask > 0 && (t.litRun&skipMask) != 0 {
+		t.litRun++
+		return operation{distance: 0, n: 1, b: t.data[0]}
+	}
+
 	var (
 		m                  operation
 		x, u, v            uint32
@@ -473,10 +490,10 @@ func (t *binTree) NextOp(rep [4]uint32) operation {
 	)
 	p := matchParams{
 		rep:     rep,
-		nAccept: maxMatchLen,
+		nAccept: 64,
 		check:   32,
 	}
-	if t.minimalMode {
+	if t.minimalMode || t.litRun >= 64 {
 		p.check = 1
 		p.nAccept = 8
 	}
@@ -535,7 +552,9 @@ func (t *binTree) NextOp(rep [4]uint32) operation {
 	m, _, _ = t.match(m, iterPred, p)
 end:
 	if m.n == 0 {
+		t.litRun++
 		return operation{distance: 0, n: 1, b: t.data[0]}
 	}
+	t.litRun = 0
 	return m
 }

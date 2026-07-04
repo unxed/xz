@@ -47,7 +47,7 @@ func findBestMatch(dict []byte, rear int, data []byte, dists []int, rep0 uint32)
 		if n > bestLen {
 			bestDist = dist
 			bestLen = n
-			if n == dataLen {
+			if n >= 64 || n == dataLen {
 				break
 			}
 		}

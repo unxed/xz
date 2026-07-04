@@ -9,7 +9,7 @@ TEXT ·findBestMatch(SB), NOSPLIT, $0-104
 
 	MOVQ dists_len+64(FP), CX
 	TESTQ CX, CX
-	JZ done_save
+	JZ done
 
 	MOVQ dict_base+0(FP), R8
 	MOVQ dict_len+8(FP), R9
@@ -126,6 +126,8 @@ check_best:
 	MOVQ -8(R13), R14
 	MOVQ BX, AX
 
+	CMPQ AX, $64
+	JGE done_save
 	CMPQ AX, R12
 	JE done_save
 
@@ -134,4 +136,5 @@ check_best:
 done_save:
 	MOVQ R14, bestDist+88(FP)
 	MOVQ AX, bestLen+96(FP)
+done:
 	RET

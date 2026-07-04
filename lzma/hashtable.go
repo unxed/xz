@@ -19,7 +19,7 @@ import (
 
 // maxMatches limits the number of matches requested from the Matches
 // function. This controls the speed of the overall encoding.
-const maxMatches = 16
+const maxMatches = 32
 
 // shortDists defines the number of short distances supported by the
 // implementation.
@@ -64,6 +64,7 @@ type hashTable struct {
 	cpMask int
 	cpShift uint
 	minimalMode bool
+	litRun      int
 
 	// preallocated slices
 	p         [maxMatches]int64
@@ -131,6 +132,7 @@ func (t *hashTable) Reset() {
 	t.cpI = 0
 	t.cpMask = t.wordLen - 1
 	t.cpShift = uint(t.wordLen - 1)
+	t.litRun = 0
 	for i := 0; i < 4; i++ {
 		t.cpP[i] = 0
 	}
@@ -148,53 +150,34 @@ func (t *hashTable) buffered() int {
 	return int(n)
 }
 
-// addIndex adds n to an index ensuring that is stays inside the
-// circular buffer for the hash chain.
-func (t *hashTable) addIndex(i, n int) int {
-	i += n - len(t.data)
-	if i < 0 {
-		i += len(t.data)
-	}
-	return i
-}
-
-// putDelta puts the delta instance at the current front of the circular
-// chain buffer.
-func (t *hashTable) putDelta(delta uint32) {
-	t.data[t.front] = delta
-	t.front = t.addIndex(t.front, 1)
-}
-
-// putEntry puts a new entry into the hash table. If there is already a
-// value stored it is moved into the circular chain buffer.
-func (t *hashTable) putEntry(h uint64, pos int64) {
-	if pos < 0 {
-		return
-	}
-	i := h & t.mask
-	old := t.t[i] - 1
-	t.t[i] = pos + 1
-	var delta int64
-	if old >= 0 {
-		delta = pos - old
-		if delta > 1<<32-1 || delta > int64(t.buffered()) {
-			delta = 0
-		}
-	}
-	t.putDelta(uint32(delta))
-}
-
 // WriteByte converts a single byte into a hash and puts them into the hash
 // table.
 func (t *hashTable) WriteByte(b byte) error {
 	y := hash.HashValues[b]
-	t.cpH ^= ror(t.cpP[t.cpI], t.cpShift)
-	t.cpH = ror(t.cpH, 1) ^ y
+	oldP := t.cpP[t.cpI]
+	t.cpH ^= (oldP >> t.cpShift) | (oldP << (64 - t.cpShift))
+	t.cpH = ((t.cpH >> 1) | (t.cpH << 63)) ^ y
 	t.cpP[t.cpI] = y
 	t.cpI = (t.cpI + 1) & t.cpMask
 
 	t.hoff++
-	t.putEntry(t.cpH, t.hoff)
+	if t.hoff >= 0 {
+		i := t.cpH & t.mask
+		old := t.t[i] - 1
+		t.t[i] = t.hoff + 1
+		var delta int64
+		if old >= 0 {
+			delta = t.hoff - old
+			if delta >= int64(len(t.data)) {
+				delta = 0
+			}
+		}
+		t.data[t.front] = uint32(delta)
+		t.front++
+		if t.front == len(t.data) {
+			t.front = 0
+		}
+	}
 	return nil
 }
 
@@ -202,16 +185,51 @@ func (t *hashTable) WriteByte(b byte) error {
 // abbreviated offsets into the hash table. The method will never return an
 // error.
 func (t *hashTable) Write(p []byte) (n int, err error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	mask := t.mask
+	table := t.t
+	data := t.data
+	front := t.front
+	hoff := t.hoff
+	cpH := t.cpH
+	cpI := t.cpI
+	cpShift := t.cpShift
+	cpMask := t.cpMask
+
 	for _, b := range p {
 		y := hash.HashValues[b]
-		t.cpH ^= ror(t.cpP[t.cpI], t.cpShift)
-		t.cpH = ror(t.cpH, 1) ^ y
-		t.cpP[t.cpI] = y
-		t.cpI = (t.cpI + 1) & t.cpMask
+		oldP := t.cpP[cpI]
+		cpH ^= (oldP >> cpShift) | (oldP << (64 - cpShift))
+		cpH = ((cpH >> 1) | (cpH << 63)) ^ y
+		t.cpP[cpI] = y
+		cpI = (cpI + 1) & cpMask
 
-		t.hoff++
-		t.putEntry(t.cpH, t.hoff)
+		hoff++
+		if hoff >= 0 {
+			i := cpH & mask
+			old := table[i] - 1
+			table[i] = hoff + 1
+			var delta int64
+			if old >= 0 {
+				delta = hoff - old
+				if delta >= int64(len(data)) {
+					delta = 0
+				}
+			}
+			data[front] = uint32(delta)
+			front++
+			if front == len(data) {
+				front = 0
+			}
+		}
 	}
+
+	t.front = front
+	t.hoff = hoff
+	t.cpH = cpH
+	t.cpI = cpI
 	return len(p), nil
 }
 
@@ -262,10 +280,25 @@ func (t *hashTable) NextOp(rep [4]uint32) operation {
 	data := t.dict.data[:maxMatchLen]
 	n, _ := t.dict.buf.Peek(data)
 	data = data[:n]
-	
+
+	var skipMask int
+	if t.minimalMode {
+		skipMask = 15
+	} else if t.litRun >= 256 {
+		skipMask = 15
+	} else if t.litRun >= 128 {
+		skipMask = 7
+	} else if t.litRun >= 64 {
+		skipMask = 3
+	}
+	if skipMask > 0 && (t.litRun&skipMask) != 0 {
+		t.litRun++
+		return operation{distance: 0, n: 1, b: data[0]}
+	}
+
 	var p []int64
 	numMatches := maxMatches
-	if t.minimalMode {
+	if t.minimalMode || t.litRun >= 64 {
 		numMatches = 1
 	}
 	if n < t.wordLen {
@@ -278,7 +311,7 @@ func (t *hashTable) NextOp(rep [4]uint32) operation {
 
 	head := t.dict.head
 	dists := append(t.distances[:0], 1, 2, 3, 4, 5, 6, 7, 8)
-	if t.minimalMode {
+	if t.minimalMode || t.litRun >= 64 {
 		dists = dists[:0]
 	}
 	for _, pos := range p {
@@ -296,7 +329,7 @@ func (t *hashTable) NextOp(rep [4]uint32) operation {
 		}
 	}
 
-	if len(data) >= 5 {
+	if len(data) >= 5 && !(t.minimalMode || t.litRun >= 64) {
 		nextIdx := t.hash(data[1:5]) & t.mask
 		prefetch(unsafe.Pointer(&t.t[nextIdx]))
 	}
@@ -304,7 +337,9 @@ func (t *hashTable) NextOp(rep [4]uint32) operation {
 	bestDist, bestLen := findBestMatch(t.dict.buf.data, t.dict.buf.rear, data, validDists, rep[0])
 
 	if bestLen == 0 {
+		t.litRun++
 		return operation{distance: 0, n: 1, b: data[0]}
 	}
+	t.litRun = 0
 	return operation{distance: int64(bestDist), n: bestLen}
 }
