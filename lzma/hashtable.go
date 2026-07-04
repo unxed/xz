@@ -198,7 +198,13 @@ func (t *hashTable) Write(p []byte) (n int, err error) {
 	cpShift := t.cpShift
 	cpMask := t.cpMask
 
-	for _, b := range p {
+	// Разделение цикла (Loop Splitting) для длинных совпадений (>= 4 байт).
+	// Позволяет компилятору и процессору идеально предсказывать ветвления (branch prediction),
+	// полностью убирая if-проверки из горячего цикла и отключая L3 cache misses для p[1:].
+	// Для коротких строк или тестов (wordLen < 4) используется классический полный цикл.
+	if t.wordLen == 4 && len(p) >= 4 {
+		// Байт 0 (вставляем полностью)
+		b := p[0]
 		y := hash.HashValues[b]
 		oldP := t.cpP[cpI]
 		cpH ^= (oldP >> cpShift) | (oldP << (64 - cpShift))
@@ -222,6 +228,54 @@ func (t *hashTable) Write(p []byte) (n int, err error) {
 			front++
 			if front == len(data) {
 				front = 0
+			}
+		}
+
+		// Байты 1..len(p)-1 (только обновляем катящийся хеш, пропуская запись в память)
+		for i := 1; i < len(p); i++ {
+			b := p[i]
+			y := hash.HashValues[b]
+			oldP := t.cpP[cpI]
+			cpH ^= (oldP >> cpShift) | (oldP << (64 - cpShift))
+			cpH = ((cpH >> 1) | (cpH << 63)) ^ y
+			t.cpP[cpI] = y
+			cpI = (cpI + 1) & cpMask
+
+			hoff++
+			if hoff >= 0 {
+				front++
+				if front == len(data) {
+					front = 0
+				}
+			}
+		}
+	} else {
+		// Классический полный цикл для коротких совпадений и тестов
+		for _, b := range p {
+			y := hash.HashValues[b]
+			oldP := t.cpP[cpI]
+			cpH ^= (oldP >> cpShift) | (oldP << (64 - cpShift))
+			cpH = ((cpH >> 1) | (cpH << 63)) ^ y
+			t.cpP[cpI] = y
+			cpI = (cpI + 1) & cpMask
+
+			hoff++
+			if hoff >= 0 {
+				i := cpH & mask
+				old := table[i] - 1
+				table[i] = hoff + 1
+				var delta int64
+				if old >= 0 {
+					delta = hoff - old
+					if delta >= int64(len(data)) {
+						delta = 0
+					}
+				}
+				data[front] = uint32(delta)
+				front++
+				if front == len(data) {
+					front = 0
+				}
 			}
 		}
 	}
@@ -298,23 +352,50 @@ func (t *hashTable) NextOp(rep [4]uint32) operation {
 
 	var p []int64
 	numMatches := maxMatches
-	if t.minimalMode || t.litRun >= 64 {
+	if t.minimalMode {
 		numMatches = 1
+	} else if t.litRun >= 64 {
+		numMatches = 1
+	} else if t.litRun >= 32 {
+		numMatches = 4
+	} else if t.litRun >= 16 {
+		numMatches = 8
+	} else if t.litRun >= 8 {
+		numMatches = 16
 	}
+
 	if n < t.wordLen {
 		p = t.p[:0]
 	} else {
 		p = t.p[:numMatches]
-		k := t.Matches(data[:t.wordLen], p)
+		h := hash.HashValues[data[0]]
+		if t.wordLen == 4 {
+			h = ror(h, 1) ^ hash.HashValues[data[1]]
+			h = ror(h, 1) ^ hash.HashValues[data[2]]
+			h = ror(h, 1) ^ hash.HashValues[data[3]]
+		} else if t.wordLen == 3 {
+			h = ror(h, 1) ^ hash.HashValues[data[1]]
+			h = ror(h, 1) ^ hash.HashValues[data[2]]
+		} else if t.wordLen == 2 {
+			h = ror(h, 1) ^ hash.HashValues[data[1]]
+		}
+		k := getMatches(t.t, t.data, t.front, t.mask, t.hoff, h, p)
 		p = p[:k]
 	}
 
 	head := t.dict.head
-	dists := append(t.distances[:0], 1, 2, 3, 4, 5, 6, 7, 8)
+	dists := t.distances[:0]
 	if t.minimalMode || t.litRun >= 64 {
-		dists = dists[:0]
+		// dists остаётся пустым
+	} else if t.litRun >= 32 {
+		// При среднем litRun отключаем короткие дистанции 1..8, оставляя только ценные rep
+		dists = append(dists, int(rep[0]+1), int(rep[1]+1), int(rep[2]+1), int(rep[3]+1))
+	} else {
+		dists = append(dists, int(rep[0]+1), int(rep[1]+1), int(rep[2]+1), int(rep[3]+1))
+		dists = append(dists, 1, 2, 3, 4, 5, 6, 7, 8)
 	}
-	for _, pos := range p {
+    
+    for _, pos := range p {
 		dis := int(head - pos)
 		if dis > shortDists {
 			dists = append(dists, dis)

@@ -53,10 +53,25 @@ func newEncoderDict(dictCap, bufSize int, m matcher) (d *encoderDict, err error)
 // Discard discards n bytes. Note that n must not be larger than
 // MaxMatchLen.
 func (d *encoderDict) Discard(n int) {
-	p := d.data[:n]
-	k, _ := d.buf.Read(p)
-	if k < n {
-		panic(fmt.Errorf("lzma: can't discard %d bytes", n))
+	rear := d.buf.rear
+	data := d.buf.data
+	var p []byte
+
+	// Быстрый путь: если данные в кольцевом буфере не переходят через границу,
+	// мы берем срез напрямую (zero-copy), полностью избегая копирования памяти (memmove).
+	if rear+n <= len(data) {
+		p = data[rear : rear+n]
+		d.buf.rear += n
+		if d.buf.rear == len(data) {
+			d.buf.rear = 0
+		}
+	} else {
+		// Медленный путь: копирование при переходе через край буфера (крайне редко)
+		p = d.data[:n]
+		k, _ := d.buf.Read(p)
+		if k < n {
+			panic(fmt.Errorf("lzma: can't discard %d bytes", n))
+		}
 	}
 	d.head += int64(n)
 	d.m.Write(p)
