@@ -338,8 +338,8 @@ func (w *Writer2) coordinator() {
 // It uses a very fast LZ4-style scan to count matching bytes.
 // Returns a ratio proxy where >= 0.98 means heavily uncompressible.
 func fastEstimateCompressibility(data []byte) float64 {
-	if len(data) < 16 {
-		return 1.0
+	if len(data) < 65536 {
+		return 0.0
 	}
 	const hashBits = 14
 	tablePtr := estimateTablePool.Get().(*[]uint32)
