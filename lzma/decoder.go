@@ -110,13 +110,21 @@ func (d *decoder) processNextOp() error {
 			code = (code << 8) | uint32(buf[pos])
 			pos++
 		} else {
-			d.rd.nrange = nrange; d.rd.code = code; d.rd.pos = pos; d.rd.updateCodeSlow()
-			nrange = d.rd.nrange; code = d.rd.code; pos = d.rd.pos; limit = d.rd.limit
+			d.rd.nrange = nrange
+			d.rd.code = code
+			d.rd.pos = pos
+			d.rd.updateCodeSlow()
+			nrange = d.rd.nrange
+			code = d.rd.code
+			pos = d.rd.pos
+			limit = d.rd.limit
 		}
 	}
 
 	if b == 0 {
-		d.rd.nrange = nrange; d.rd.code = code; d.rd.pos = pos
+		d.rd.nrange = nrange
+		d.rd.code = code
+		d.rd.pos = pos
 		err := d.decodeLiteral()
 		if err != nil {
 			return err
@@ -144,15 +152,23 @@ func (d *decoder) processNextOp() error {
 			code = (code << 8) | uint32(buf[pos])
 			pos++
 		} else {
-			d.rd.nrange = nrange; d.rd.code = code; d.rd.pos = pos; d.rd.updateCodeSlow()
-			nrange = d.rd.nrange; code = d.rd.code; pos = d.rd.pos; limit = d.rd.limit
+			d.rd.nrange = nrange
+			d.rd.code = code
+			d.rd.pos = pos
+			d.rd.updateCodeSlow()
+			nrange = d.rd.nrange
+			code = d.rd.code
+			pos = d.rd.pos
+			limit = d.rd.limit
 		}
 	}
 
 	if b == 0 {
 		d.State.rep[3], d.State.rep[2], d.State.rep[1] = d.State.rep[2], d.State.rep[1], d.State.rep[0]
 		d.State.updateStateMatch()
-		d.rd.nrange = nrange; d.rd.code = code; d.rd.pos = pos
+		d.rd.nrange = nrange
+		d.rd.code = code
+		d.rd.pos = pos
 		n := d.State.lenCodec.Decode(d.rd, posState)
 		d.State.rep[0] = d.State.distCodec.Decode(d.rd, n)
 		if d.rd.err != nil {
@@ -187,8 +203,14 @@ func (d *decoder) processNextOp() error {
 			code = (code << 8) | uint32(buf[pos])
 			pos++
 		} else {
-			d.rd.nrange = nrange; d.rd.code = code; d.rd.pos = pos; d.rd.updateCodeSlow()
-			nrange = d.rd.nrange; code = d.rd.code; pos = d.rd.pos; limit = d.rd.limit
+			d.rd.nrange = nrange
+			d.rd.code = code
+			d.rd.pos = pos
+			d.rd.updateCodeSlow()
+			nrange = d.rd.nrange
+			code = d.rd.code
+			pos = d.rd.pos
+			limit = d.rd.limit
 		}
 	}
 
@@ -213,14 +235,22 @@ func (d *decoder) processNextOp() error {
 				code = (code << 8) | uint32(buf[pos])
 				pos++
 			} else {
-				d.rd.nrange = nrange; d.rd.code = code; d.rd.pos = pos; d.rd.updateCodeSlow()
-				nrange = d.rd.nrange; code = d.rd.code; pos = d.rd.pos; limit = d.rd.limit
+				d.rd.nrange = nrange
+				d.rd.code = code
+				d.rd.pos = pos
+				d.rd.updateCodeSlow()
+				nrange = d.rd.nrange
+				code = d.rd.code
+				pos = d.rd.pos
+				limit = d.rd.limit
 			}
 		}
 
 		if b == 0 {
 			d.State.updateStateShortRep()
-			d.rd.nrange = nrange; d.rd.code = code; d.rd.pos = pos
+			d.rd.nrange = nrange
+			d.rd.code = code
+			d.rd.pos = pos
 			if d.rd.err != nil {
 				if d.rd.err == io.EOF {
 					return io.ErrUnexpectedEOF
@@ -249,8 +279,14 @@ func (d *decoder) processNextOp() error {
 				code = (code << 8) | uint32(buf[pos])
 				pos++
 			} else {
-				d.rd.nrange = nrange; d.rd.code = code; d.rd.pos = pos; d.rd.updateCodeSlow()
-				nrange = d.rd.nrange; code = d.rd.code; pos = d.rd.pos; limit = d.rd.limit
+				d.rd.nrange = nrange
+				d.rd.code = code
+				d.rd.pos = pos
+				d.rd.updateCodeSlow()
+				nrange = d.rd.nrange
+				code = d.rd.code
+				pos = d.rd.pos
+				limit = d.rd.limit
 			}
 		}
 
@@ -276,8 +312,14 @@ func (d *decoder) processNextOp() error {
 					code = (code << 8) | uint32(buf[pos])
 					pos++
 				} else {
-					d.rd.nrange = nrange; d.rd.code = code; d.rd.pos = pos; d.rd.updateCodeSlow()
-					nrange = d.rd.nrange; code = d.rd.code; pos = d.rd.pos; limit = d.rd.limit
+					d.rd.nrange = nrange
+					d.rd.code = code
+					d.rd.pos = pos
+					d.rd.updateCodeSlow()
+					nrange = d.rd.nrange
+					code = d.rd.code
+					pos = d.rd.pos
+					limit = d.rd.limit
 				}
 			}
 
@@ -293,7 +335,9 @@ func (d *decoder) processNextOp() error {
 		d.State.rep[0] = dist
 	}
 
-	d.rd.nrange = nrange; d.rd.code = code; d.rd.pos = pos
+	d.rd.nrange = nrange
+	d.rd.code = code
+	d.rd.pos = pos
 	n := d.State.repLenCodec.Decode(d.rd, posState)
 	if d.rd.err != nil {
 		if d.rd.err == io.EOF {

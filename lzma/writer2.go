@@ -186,6 +186,7 @@ func (w *Writer2) setError(err error) {
 		w.err = err
 	}
 }
+
 // Destroy tears down the background worker goroutines. This is primarily
 // called automatically via a runtime finalizer during garbage collection.
 func (w *Writer2) Destroy() {

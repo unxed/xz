@@ -16,6 +16,7 @@ var blockPool = sync.Pool{
 		return nil
 	},
 }
+
 type blockResult struct {
 	data  []byte
 	err   error

@@ -58,17 +58,17 @@ type hashTable struct {
 	hr *hash.CyclicPoly
 
 	// Inlined CyclicPoly state for t.wr
-	cpH uint64
-	cpP [4]uint64
-	cpI int
-	cpMask int
-	cpShift uint
+	cpH         uint64
+	cpP         [4]uint64
+	cpI         int
+	cpMask      int
+	cpShift     uint
 	minimalMode bool
 	litRun      int
 
 	// preallocated slices
 	p         [maxMatches]int64
-    distances [maxMatches + shortDists]int
+	distances [maxMatches + shortDists]int
 }
 
 // hashTableExponent derives the hash table exponent from the dictionary
@@ -118,6 +118,7 @@ func (t *hashTable) SetDict(d *encoderDict) { t.dict = d }
 
 // SetMinimalMode enables or disables the fast, minimal-compression mode.
 func (t *hashTable) SetMinimalMode(minimal bool) { t.minimalMode = minimal }
+
 // Reset clears the hash table and offsets for reuse.
 func (t *hashTable) Reset() {
 	for i := range t.t {
@@ -394,8 +395,8 @@ func (t *hashTable) NextOp(rep [4]uint32) operation {
 		dists = append(dists, int(rep[0]+1), int(rep[1]+1), int(rep[2]+1), int(rep[3]+1))
 		dists = append(dists, 1, 2, 3, 4, 5, 6, 7, 8)
 	}
-    
-    for _, pos := range p {
+
+	for _, pos := range p {
 		dis := int(head - pos)
 		if dis > shortDists {
 			dists = append(dists, dis)

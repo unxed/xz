@@ -186,6 +186,7 @@ func (r *Reader2) Read(p []byte) (n int, err error) {
 func (r *Reader2) EOS() bool {
 	return r.cstate == stop
 }
+
 // Close closes the reader and releases the dictionary buffer back to the pool.
 func (r *Reader2) Close() error {
 	if r.dict != nil {
@@ -260,6 +261,7 @@ func (ur *uncompressedReader) Read(p []byte) (n int, err error) {
 	ur.err = err
 	return n, err
 }
+
 type segment struct {
 	offset       int64
 	compressed   int64

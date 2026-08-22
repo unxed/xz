@@ -56,7 +56,7 @@ var lzmaDictCapExps = []uint{18, 20, 21, 22, 22, 23, 23, 24, 25, 26}
 
 // formats contains the formats supported by gxz.
 var formats = map[string]*format{
-	"lzma": &format{
+	"lzma": {
 		newCompressor: func(w io.Writer, opts *options,
 		) (c io.WriteCloser, err error) {
 			lc := lzma.WriterConfig{
@@ -81,7 +81,7 @@ var formats = map[string]*format{
 			return lzma.ValidHeader(h)
 		},
 	},
-	"xz": &format{
+	"xz": {
 		newCompressor: func(w io.Writer, opts *options,
 		) (c io.WriteCloser, err error) {
 			cfg := xz.WriterConfig{

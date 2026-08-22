@@ -326,6 +326,7 @@ func (br *blockReader) unpaddedSize() int64 {
 func (br *blockReader) record() record {
 	return record{br.unpaddedSize(), br.uncompressedSize()}
 }
+
 // Close closes the underlying filter reader, releasing pooled resources.
 func (br *blockReader) Close() error {
 	if br.closer != nil {

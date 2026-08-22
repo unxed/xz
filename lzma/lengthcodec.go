@@ -117,8 +117,14 @@ func (lc *lengthCodec) Decode(d *rangeDecoder, posState uint32) uint32 {
 			code = (code << 8) | uint32(buf[pos])
 			pos++
 		} else {
-			d.nrange = nrange; d.code = code; d.pos = pos; d.updateCodeSlow()
-			nrange = d.nrange; code = d.code; pos = d.pos; limit = d.limit
+			d.nrange = nrange
+			d.code = code
+			d.pos = pos
+			d.updateCodeSlow()
+			nrange = d.nrange
+			code = d.code
+			pos = d.pos
+			limit = d.limit
 		}
 	}
 
@@ -144,12 +150,20 @@ func (lc *lengthCodec) Decode(d *rangeDecoder, posState uint32) uint32 {
 					code = (code << 8) | uint32(buf[pos])
 					pos++
 				} else {
-					d.nrange = nrange; d.code = code; d.pos = pos; d.updateCodeSlow()
-					nrange = d.nrange; code = d.code; pos = d.pos; limit = d.limit
+					d.nrange = nrange
+					d.code = code
+					d.pos = pos
+					d.updateCodeSlow()
+					nrange = d.nrange
+					code = d.code
+					pos = d.pos
+					limit = d.limit
 				}
 			}
 		}
-		d.nrange = nrange; d.code = code; d.pos = pos
+		d.nrange = nrange
+		d.code = code
+		d.pos = pos
 		return m - 8
 	}
 
@@ -172,8 +186,14 @@ func (lc *lengthCodec) Decode(d *rangeDecoder, posState uint32) uint32 {
 			code = (code << 8) | uint32(buf[pos])
 			pos++
 		} else {
-			d.nrange = nrange; d.code = code; d.pos = pos; d.updateCodeSlow()
-			nrange = d.nrange; code = d.code; pos = d.pos; limit = d.limit
+			d.nrange = nrange
+			d.code = code
+			d.pos = pos
+			d.updateCodeSlow()
+			nrange = d.nrange
+			code = d.code
+			pos = d.pos
+			limit = d.limit
 		}
 	}
 
@@ -199,12 +219,20 @@ func (lc *lengthCodec) Decode(d *rangeDecoder, posState uint32) uint32 {
 					code = (code << 8) | uint32(buf[pos])
 					pos++
 				} else {
-					d.nrange = nrange; d.code = code; d.pos = pos; d.updateCodeSlow()
-					nrange = d.nrange; code = d.code; pos = d.pos; limit = d.limit
+					d.nrange = nrange
+					d.code = code
+					d.pos = pos
+					d.updateCodeSlow()
+					nrange = d.nrange
+					code = d.code
+					pos = d.pos
+					limit = d.limit
 				}
 			}
 		}
-		d.nrange = nrange; d.code = code; d.pos = pos
+		d.nrange = nrange
+		d.code = code
+		d.pos = pos
 		return m - 8 + 8
 	}
 
@@ -229,11 +257,19 @@ func (lc *lengthCodec) Decode(d *rangeDecoder, posState uint32) uint32 {
 				code = (code << 8) | uint32(buf[pos])
 				pos++
 			} else {
-				d.nrange = nrange; d.code = code; d.pos = pos; d.updateCodeSlow()
-				nrange = d.nrange; code = d.code; pos = d.pos; limit = d.limit
+				d.nrange = nrange
+				d.code = code
+				d.pos = pos
+				d.updateCodeSlow()
+				nrange = d.nrange
+				code = d.code
+				pos = d.pos
+				limit = d.limit
 			}
 		}
 	}
-	d.nrange = nrange; d.code = code; d.pos = pos
+	d.nrange = nrange
+	d.code = code
+	d.pos = pos
 	return m - 256 + 16
 }

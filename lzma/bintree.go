@@ -78,6 +78,7 @@ func (t *binTree) SetDict(d *encoderDict) { t.dict = d }
 
 // SetMinimalMode enables or disables the fast, minimal-compression mode.
 func (t *binTree) SetMinimalMode(minimal bool) { t.minimalMode = minimal }
+
 // Reset clears the binary tree nodes and offsets for reuse.
 func (t *binTree) Reset() {
 	for i := range t.node {

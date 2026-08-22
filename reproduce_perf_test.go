@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"math/rand"
 	"github.com/unxed/xz/internal/randtxt"
+	"math/rand"
 
 	"github.com/unxed/xz"
 )

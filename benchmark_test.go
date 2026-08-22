@@ -1,10 +1,10 @@
 package xz_test
 
 import (
-    "sync"
 	"bytes"
 	"io"
 	"math/rand"
+	"sync"
 	"testing"
 
 	"github.com/unxed/xz"
@@ -12,9 +12,9 @@ import (
 )
 
 var (
-	benchDataOnce sync.Once
+	benchDataOnce       sync.Once
 	benchCompressedData []byte
-	benchOriginalSize int64
+	benchOriginalSize   int64
 )
 
 func prepareBenchData() {
