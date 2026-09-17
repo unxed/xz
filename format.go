@@ -523,8 +523,9 @@ type filter interface {
 	last() bool
 }
 
-// readFilter reads a block filter from the block header. At this point
-// in time only the LZMA2 filter is supported.
+// readFilter reads a block filter from the block header: the compression
+// filter, LZMA2, or one of the filters that run before it, which an archive
+// declares ahead of LZMA2 in its filter chain.
 func readFilter(r io.Reader) (f filter, err error) {
 	br := lzma.ByteReader(r)
 
@@ -543,6 +544,17 @@ func readFilter(r io.Reader) (f filter, err error) {
 			return nil, err
 		}
 		f = new(lzmaFilter)
+	case deltaFilterID:
+		if data, err = readFilterProperties(r, br, id); err != nil {
+			return nil, err
+		}
+		f = new(deltaFilter)
+	case x86FilterID, powerPCFilterID, ia64FilterID, armFilterID,
+		armThumbFilterID, sparcFilterID, arm64FilterID, riscvFilterID:
+		if data, err = readFilterProperties(r, br, id); err != nil {
+			return nil, err
+		}
+		f = new(simpleFilter)
 	default:
 		if id >= minReservedID {
 			return nil, errors.New(
@@ -556,17 +568,45 @@ func readFilter(r io.Reader) (f filter, err error) {
 	return f, err
 }
 
-// readFilters reads count filters. At this point in time only the count
-// 1 is supported.
-func readFilters(r io.Reader, count int) (filters []filter, err error) {
-	if count != 1 {
-		return nil, errors.New("xz: unsupported filter count")
-	}
-	f, err := readFilter(r)
+// readFilterProperties reads the length of a filter's properties and the
+// properties themselves, and returns them behind the filter's id and their
+// length, which is how a filter unmarshals itself.
+func readFilterProperties(r io.Reader, br io.ByteReader, id uint64) (data []byte, err error) {
+	size, _, err := readUvarint(br)
 	if err != nil {
 		return nil, err
 	}
-	return []filter{f}, err
+	if size > maxFilterPropsLen {
+		return nil, fmt.Errorf("xz: %s filter declares %d property bytes",
+			simpleFilterName(id), size)
+	}
+	data = make([]byte, 2+size)
+	data[0] = byte(id)
+	data[1] = byte(size)
+	if _, err = io.ReadFull(r, data[2:]); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+// readFilters reads count filters. A chain holds the compression filter last,
+// preceded by the filters that were applied to the data before it.
+func readFilters(r io.Reader, count int) (filters []filter, err error) {
+	if count < minFilters || count > maxFilters {
+		return nil, errors.New("xz: unsupported filter count")
+	}
+	filters = make([]filter, 0, count)
+	for i := 0; i < count; i++ {
+		f, err := readFilter(r)
+		if err != nil {
+			return nil, err
+		}
+		filters = append(filters, f)
+	}
+	if err = verifyFilters(filters); err != nil {
+		return nil, err
+	}
+	return filters, nil
 }
 
 /*** Index ***/
