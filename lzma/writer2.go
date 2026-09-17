@@ -124,7 +124,8 @@ type Writer2 struct {
 	err     error
 	errLock sync.Mutex
 
-	closed bool
+	closed  bool
+	stopped bool
 }
 
 // NewWriter2 creates an LZMA2 chunk sequence writer with the default
@@ -152,22 +153,43 @@ func (c Writer2Config) NewWriter2(lzma2 io.Writer) (*Writer2, error) {
 		w.blockSize = 64 << 20
 	}
 
-	w.jobs = make(chan *chunkJob, c.Concurrency*2)
-	w.outCh = make(chan *chunkJob, c.Concurrency*2)
+	w.start()
+
+	return w, nil
+}
+
+// start creates the channels of the writer and the goroutines that work on
+// them: one coordinator, which writes the finished chunks out in order, and
+// Concurrency workers.
+func (w *Writer2) start() {
+	w.jobs = make(chan *chunkJob, w.config.Concurrency*2)
+	w.outCh = make(chan *chunkJob, w.config.Concurrency*2)
 	w.coordDone = make(chan struct{})
+	w.stopped = false
 
 	go w.coordinator()
 
-	for i := 0; i < c.Concurrency; i++ {
+	for i := 0; i < w.config.Concurrency; i++ {
 		w.wg.Add(1)
 		go w.worker()
 	}
+}
 
-	runtime.SetFinalizer(w, func(obj *Writer2) {
-		obj.Destroy()
-	})
+// stop lets the workers and the coordinator finish and return. A worker holds
+// a match finder and a dictionary of its own, which is tens of megabytes at
+// the default dictionary capacity, so a writer that is done with has to stop
+// them. It is safe to call more than once.
+func (w *Writer2) stop() {
+	if w.stopped || w.jobs == nil {
+		return
+	}
+	w.stopped = true
 
-	return w, nil
+	close(w.jobs)
+	w.wg.Wait()
+	// The workers are the only senders on outCh and they have returned.
+	close(w.outCh)
+	<-w.coordDone
 }
 
 func (w *Writer2) getError() error {
@@ -187,13 +209,11 @@ func (w *Writer2) setError(err error) {
 	}
 }
 
-// Destroy tears down the background worker goroutines. This is primarily
-// called automatically via a runtime finalizer during garbage collection.
+// Destroy tears down the background worker goroutines. Close does that as
+// well, so a writer that has been closed needs no Destroy; it is left for a
+// writer that is given up on without being closed.
 func (w *Writer2) Destroy() {
-	close(w.jobs)
-	w.wg.Wait()
-	close(w.outCh)
-	<-w.coordDone
+	w.stop()
 }
 
 // Reset resets the state of the writer so it can be reused with a new output stream.
@@ -211,7 +231,14 @@ func (w *Writer2) Reset(lzma2 io.Writer) error {
 	}
 	w.inBuf = nil
 	w.nextSeq = 0
-	w.outCh <- &chunkJob{reset: true}
+	if w.stopped {
+		// Close stopped the workers; reusing the writer starts them
+		// again, which is still cheaper for the caller than building a
+		// second writer while the first one is kept around.
+		w.start()
+	} else {
+		w.outCh <- &chunkJob{reset: true}
+	}
 
 	return nil
 }
@@ -288,6 +315,9 @@ func (w *Writer2) Close() error {
 
 	w.flushParallelBlock()
 	w.pendingWg.Wait()
+	// Every chunk has been written by now, so the workers are done with
+	// whatever the stream ends up being: stop them either way.
+	defer w.stop()
 	if err := w.getError(); err != nil {
 		return err
 	}
