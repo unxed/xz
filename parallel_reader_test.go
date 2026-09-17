@@ -6,7 +6,9 @@ package xz_test
 
 import (
 	"bytes"
+	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"testing"
 
@@ -115,7 +117,10 @@ func TestParallelReader_EarlyClose(t *testing.T) {
 	}
 }
 func TestParallelReader_AgainstExistingCorpus(t *testing.T) {
-	// Список тестовых файлов, поставляемых с проектом
+	// Список тестовых файлов, поставляемых с проектом.
+	// example.xz в него не входит: его пишет пример, а примеры
+	// выполняются после тестов, так что на чистой копии репозитория
+	// этого файла в рабочем каталоге ещё нет.
 	files := []string{
 		"fox.xz",
 		"fox-check-none.xz",
@@ -125,6 +130,9 @@ func TestParallelReader_AgainstExistingCorpus(t *testing.T) {
 	for _, file := range files {
 		t.Run(file, func(t *testing.T) {
 			data, err := os.ReadFile(file)
+			if errors.Is(err, fs.ErrNotExist) {
+				t.Skipf("%s is not in the working directory", file)
+			}
 			if err != nil {
 				t.Fatalf("failed to read test file: %v", err)
 			}
