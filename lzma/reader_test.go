@@ -181,6 +181,50 @@ func TestReaderWrap(t *testing.T) {
 	}
 }
 
+// TestReaderNoReadAhead checks that the Reader doesn't consume data
+// following the LZMA stream from the underlying reader.
+func TestReaderNoReadAhead(t *testing.T) {
+	orig := readOrigFile(t)
+	trailer := []byte("data following the LZMA stream")
+	files := []string{
+		"a.lzma",
+		"a_eos.lzma",
+		"a_eos_and_size.lzma",
+		"a_lp1_lc2_pb1.lzma",
+	}
+	wraps := []wrapTest{
+		{"io.ByteReader", func(r io.Reader) io.Reader { return r }},
+		{"io.Reader", func(r io.Reader) io.Reader {
+			return struct{ io.Reader }{r}
+		}},
+	}
+	for _, fn := range files {
+		data, err := os.ReadFile(filepath.Join(dirname, fn))
+		if err != nil {
+			t.Fatalf("ReadFile(%q) error %s", fn, err)
+		}
+		for _, w := range wraps {
+			br := bytes.NewReader(append(data, trailer...))
+			r, err := NewReader(w.wrap(br))
+			if err != nil {
+				t.Fatalf("%s %s: NewReader error %s", fn, w.name, err)
+			}
+			decoded, err := io.ReadAll(r)
+			if err != nil {
+				t.Fatalf("%s %s: ReadAll error %s", fn, w.name, err)
+			}
+			if !bytes.Equal(decoded, orig) {
+				t.Fatalf("%s %s: decoded data differs from original",
+					fn, w.name)
+			}
+			if br.Len() != len(trailer) {
+				t.Errorf("%s %s: %d bytes left in underlying reader;"+
+					" want %d", fn, w.name, br.Len(), len(trailer))
+			}
+		}
+	}
+}
+
 func TestReaderBadFiles(t *testing.T) {
 	dirname := "examples"
 	dir, err := os.Open(dirname)

@@ -40,7 +40,7 @@ func TestDecoder(t *testing.T) {
 			size = int64(len(want))
 		}
 		br := bufio.NewReader(f)
-		r, err := newDecoder(br, state, dict, size)
+		r, err := newDecoder(br, false, state, dict, size)
 		if err != nil {
 			t.Fatalf("newDecoder error %s", err)
 		}

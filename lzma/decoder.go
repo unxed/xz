@@ -33,9 +33,10 @@ type decoder struct {
 // newDecoder creates a new decoder instance. The parameter size provides
 // the expected byte size of the decompressed data. If the size is
 // unknown use a negative value. In that case the decoder will look for
-// a terminating end-of-stream marker.
-func newDecoder(br io.ByteReader, state *state, dict *decoderDict, size int64) (d *decoder, err error) {
-	rd, err := newRangeDecoder(br)
+// a terminating end-of-stream marker. The parameter readAhead is passed to
+// the range decoder; see rangeDecoder.init.
+func newDecoder(r io.Reader, readAhead bool, state *state, dict *decoderDict, size int64) (d *decoder, err error) {
+	rd, err := newRangeDecoder(r, readAhead)
 	if err != nil {
 		return nil, err
 	}
@@ -49,11 +50,10 @@ func newDecoder(br io.ByteReader, state *state, dict *decoderDict, size int64) (
 	return d, nil
 }
 
-// Reopen restarts the decoder with a new byte reader and a new size. Reopen
-// resets the Decompressed counter to zero.
-func (d *decoder) Reopen(br io.ByteReader, size int64) error {
-	var err error
-	if d.rd, err = newRangeDecoder(br); err != nil {
+// Reopen restarts the decoder with a new reader and a new size. Reopen
+// resets the Decompressed counter to zero. The range decoder is reused.
+func (d *decoder) Reopen(r io.Reader, readAhead bool, size int64) error {
+	if err := d.rd.init(r, readAhead); err != nil {
 		return err
 	}
 	d.start = d.Dict.pos()

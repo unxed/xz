@@ -46,6 +46,8 @@ type Reader2 struct {
 	ur          *uncompressedReader
 	decoder     *decoder
 	chunkReader io.Reader
+	// limits the decoder to the compressed data of the current chunk
+	lr io.LimitedReader
 
 	cstate chunkState
 }
@@ -107,10 +109,12 @@ func (r *Reader2) startChunk() error {
 		r.chunkReader = r.ur
 		return nil
 	}
-	br := ByteReader(io.LimitReader(r.r, int64(header.compressed)+1))
+	// The limited reader provides exactly the compressed data of the
+	// chunk, so the decoder may read ahead.
+	r.lr = io.LimitedReader{R: r.r, N: int64(header.compressed) + 1}
 	if r.decoder == nil {
 		state := newState(header.props)
-		r.decoder, err = newDecoder(br, state, r.dict, size)
+		r.decoder, err = newDecoder(&r.lr, true, state, r.dict, size)
 		if err != nil {
 			return err
 		}
@@ -123,7 +127,7 @@ func (r *Reader2) startChunk() error {
 	case cLRN, cLRND:
 		r.decoder.State = newState(header.props)
 	}
-	err = r.decoder.Reopen(br, size)
+	err = r.decoder.Reopen(&r.lr, true, size)
 	if err != nil {
 		return err
 	}

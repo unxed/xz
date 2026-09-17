@@ -126,35 +126,97 @@ func (e *rangeEncoder) shiftLow() error {
 
 // rangeDecoder decodes single bits of the range encoding stream.
 type rangeDecoder struct {
-	br     io.ByteReader
 	nrange uint32
 	code   uint32
+	// buf[pos:limit] contains the bytes read from r that have not
+	// been consumed yet
+	pos   int
+	limit int
+	// maximum number of bytes requested by a single Read call on r
+	maxRead int
+	r       io.Reader
+	// error returned by r together with the buffered bytes
+	err error
+	buf [4096]byte
 }
 
-// newRangeDecoder initializes a range decoder. It reads five bytes from the
-// reader and therefore may return an error.
-func newRangeDecoder(br io.ByteReader) (d *rangeDecoder, err error) {
-	d = &rangeDecoder{br: br, nrange: 0xffffffff}
-
-	b, err := d.br.ReadByte()
-	if err != nil {
+// newRangeDecoder creates a new range decoder and initializes it with
+// init.
+func newRangeDecoder(r io.Reader, readAhead bool) (d *rangeDecoder, err error) {
+	d = new(rangeDecoder)
+	if err = d.init(r, readAhead); err != nil {
 		return nil, err
 	}
-	if b != 0 {
-		return nil, errors.New("newRangeDecoder: first byte not zero")
+	return d, nil
+}
+
+// init initializes the range decoder for reading from r. It reads five
+// bytes from the reader and therefore may return an error.
+//
+// If readAhead is false, the decoder reads only the bytes it consumes,
+// so any data following the range-encoded stream stays in r. If
+// readAhead is true, the decoder reads data in blocks of up to 4096
+// bytes, which avoids a Read call per byte. The caller must then ensure
+// that r doesn't provide any data after the end of the stream, for
+// instance by using an io.LimitedReader.
+func (d *rangeDecoder) init(r io.Reader, readAhead bool) error {
+	d.nrange = 0xffffffff
+	d.code = 0
+	d.pos = 0
+	d.limit = 0
+	d.maxRead = 1
+	if readAhead {
+		d.maxRead = len(d.buf)
 	}
+	d.r = r
+	d.err = nil
+
+	if err := d.fill(); err != nil {
+		return err
+	}
+	if d.buf[0] != 0 {
+		return errors.New("newRangeDecoder: first byte not zero")
+	}
+	d.pos = 1
 
 	for i := 0; i < 4; i++ {
-		if err = d.updateCode(); err != nil {
-			return nil, err
+		if err := d.updateCode(); err != nil {
+			return err
 		}
 	}
 
 	if d.code >= d.nrange {
-		return nil, errors.New("newRangeDecoder: d.code >= d.nrange")
+		return errors.New("newRangeDecoder: d.code >= d.nrange")
 	}
 
-	return d, nil
+	return nil
+}
+
+// maxConsecutiveEmptyReads limits the number of Read calls returning
+// neither data nor an error.
+const maxConsecutiveEmptyReads = 100
+
+// fill reads new data from r into the buffer. It must only be called if
+// all buffered bytes have been consumed. An error is returned if no data
+// could be read. The error io.EOF is returned if the reader is
+// exhausted.
+func (d *rangeDecoder) fill() error {
+	if d.err != nil {
+		return d.err
+	}
+	for i := 0; i < maxConsecutiveEmptyReads; i++ {
+		n, err := d.r.Read(d.buf[:d.maxRead])
+		if n > 0 {
+			d.pos, d.limit = 0, n
+			d.err = err
+			return nil
+		}
+		if err != nil {
+			d.err = err
+			return err
+		}
+	}
+	return io.ErrNoProgress
 }
 
 // possiblyAtEnd checks whether the decoder may be at the end of the stream.
@@ -213,10 +275,12 @@ func (d *rangeDecoder) DecodeBit(p *prob) (b uint32, err error) {
 
 // updateCode reads a new byte into the code.
 func (d *rangeDecoder) updateCode() error {
-	b, err := d.br.ReadByte()
-	if err != nil {
-		return err
+	if d.pos >= d.limit {
+		if err := d.fill(); err != nil {
+			return err
+		}
 	}
-	d.code = (d.code << 8) | uint32(b)
+	d.code = (d.code << 8) | uint32(d.buf[d.pos])
+	d.pos++
 	return nil
 }
