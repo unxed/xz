@@ -6,7 +6,6 @@ package lzma
 
 import (
 	"errors"
-	"fmt"
 )
 
 // decoderDict provides the dictionary for the decoder. The whole
@@ -88,27 +87,48 @@ func (d *decoderDict) writeMatch(dist int64, length int) error {
 	}
 	d.head += int64(length)
 
-	i := d.buf.front - int(dist)
-	if i < 0 {
-		i += len(d.buf.data)
+	// The match is copied directly inside the circular buffer. The
+	// source and the destination are split into segments that don't
+	// cross the end of the data slice.
+	data := d.buf.data
+	front := d.buf.front
+	src := front - int(dist)
+	if src < 0 {
+		src += len(data)
 	}
 	for length > 0 {
-		var p []byte
-		if i >= d.buf.front {
-			p = d.buf.data[i:]
-			i = 0
+		n := length
+		if k := len(data) - front; k < n {
+			n = k
+		}
+		if k := len(data) - src; k < n {
+			n = k
+		}
+		if int(dist) >= n {
+			// The segment doesn't overlap with the bytes written
+			// by this copy.
+			copy(data[front:front+n], data[src:src+n])
 		} else {
-			p = d.buf.data[i:d.buf.front]
-			i = d.buf.front
+			// The source overlaps with the destination, which
+			// means that the source directly precedes the
+			// destination and the last dist bytes are repeated.
+			// We double the repeated block with every copy.
+			k := copy(data[front:front+int(dist)], data[src:src+int(dist)])
+			for k < n {
+				k += copy(data[front+k:front+n], data[front:front+k])
+			}
 		}
-		if len(p) > length {
-			p = p[:length]
+		length -= n
+		front += n
+		if front == len(data) {
+			front = 0
 		}
-		if _, err := d.buf.Write(p); err != nil {
-			panic(fmt.Errorf("d.buf.Write returned error %s", err))
+		src += n
+		if src == len(data) {
+			src = 0
 		}
-		length -= len(p)
 	}
+	d.buf.front = front
 	return nil
 }
 
