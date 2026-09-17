@@ -114,9 +114,15 @@ func TestUnsupportedSimpleFilter(t *testing.T) {
 //
 //	FILTER_PAYLOAD_PATH=payload.bin go test -run TestWriteFilterPayload
 //	for f in x86 arm armthumb arm64 powerpc sparc; do
-//		xz -9 --$f --lzma2 -c payload.bin > testdata/filters/$f.xz
+//		xz --$f --lzma2=preset=6,dict=256KiB -c payload.bin \
+//			> testdata/filters/$f.xz
 //	done
-//	xz -9 --delta=dist=4 --lzma2 -c payload.bin > testdata/filters/delta.xz
+//	xz --delta=dist=4 --lzma2=preset=6,dict=256KiB -c payload.bin \
+//		> testdata/filters/delta.xz
+//
+// The dictionary is kept small on purpose: the reader allocates one per
+// archive, and the tests of this package are also run with -race, where the
+// preset dictionary of "xz -9" costs 64 MiB apiece.
 //
 // It does nothing unless the path is given.
 func TestWriteFilterPayload(t *testing.T) {
