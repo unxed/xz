@@ -34,12 +34,12 @@ check_max:
 	INCQ BX
 	SUBQ AX, BX
 
-	MOVQ R11, BP
-	SUBQ AX, BP
+	MOVQ R11, R13
+	SUBQ AX, R13
 
-	CMPQ BP, $0
+	CMPQ R13, $0
 	JL skip_rear_sub
-	SUBQ R10, BP
+	SUBQ R10, R13
 skip_rear_sub:
 
 	MOVQ R14, SI
@@ -65,7 +65,7 @@ loop:
 	CMPQ DI, CX
 	JGE done_save
 
-	MOVQ BP, AX
+	MOVQ R13, AX
 	ADDQ SI, AX
 
 	MOVQ AX, DX

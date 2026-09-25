@@ -13,7 +13,6 @@ TEXT ·findBestMatch(SB), NOSPLIT, $0-104
 
 	MOVQ dict_base+0(FP), R8
 	MOVQ dict_len+8(FP), R9
-	MOVQ rear+24(FP), R10
 	MOVQ data_base+32(FP), R11
 	MOVQ data_len+40(FP), R12
 
@@ -31,36 +30,36 @@ dists_loop:
 	ADDQ $8, R13
 	DECQ CX
 
-	MOVQ R10, BP
-	SUBQ DX, BP
-	ADDQ AX, BP
+	MOVQ rear+24(FP), R10
+	SUBQ DX, R10
+	ADDQ AX, R10
 
-	MOVQ BP, SI
+	MOVQ R10, SI
 	ADDQ R9, SI
-	CMPQ BP, $0
-	CMOVQLT SI, BP
+	CMPQ R10, $0
+	CMOVQLT SI, R10
 
-	MOVQ BP, SI
+	MOVQ R10, SI
 	SUBQ R9, SI
-	CMPQ BP, R9
-	CMOVQGE SI, BP
+	CMPQ R10, R9
+	CMOVQGE SI, R10
 
-	MOVBQZX (R8)(BP*1), DI
+	MOVBQZX (R8)(R10*1), DI
 	MOVBQZX (R11)(AX*1), R15
 	CMPQ DI, R15
 	JNE dists_loop
 
 	XORQ BX, BX
-	MOVQ R10, BP
+	MOVQ rear+24(FP), R10
 	MOVQ -8(R13), DX
-	SUBQ DX, BP
-	CMPQ BP, $0
+	SUBQ DX, R10
+	CMPQ R10, $0
 	JGE match_loop
-	ADDQ R9, BP
+	ADDQ R9, R10
 
 match_loop:
 	MOVQ R9, SI
-	SUBQ BP, SI
+	SUBQ R10, SI
 	MOVQ R12, DI
 	SUBQ BX, DI
 
@@ -73,12 +72,12 @@ match_loop:
 inner_cmp8:
 	CMPQ SI, $8
 	JL inner_cmp1
-	MOVQ (R8)(BP*1), DI
+	MOVQ (R8)(R10*1), DI
 	MOVQ (R11)(BX*1), DX
 	XORQ DI, DX
 	JNZ inner_mismatch8
 	ADDQ $8, BX
-	ADDQ $8, BP
+	ADDQ $8, R10
 	SUBQ $8, SI
 	JMP inner_cmp8
 
@@ -86,25 +85,25 @@ inner_mismatch8:
 	BSFQ DX, DX
 	SHRQ $3, DX
 	ADDQ DX, BX
-	ADDQ DX, BP
+	ADDQ DX, R10
 	JMP match_done
 
 inner_cmp1:
 	TESTQ SI, SI
 	JZ wrap_check
-	MOVBQZX (R8)(BP*1), DI
+	MOVBQZX (R8)(R10*1), DI
 	MOVBQZX (R11)(BX*1), R15
 	CMPQ DI, R15
 	JNE match_done
 	INCQ BX
-	INCQ BP
+	INCQ R10
 	DECQ SI
 	JMP inner_cmp1
 
 wrap_check:
-	CMPQ BP, R9
+	CMPQ R10, R9
 	JL match_loop
-	XORQ BP, BP
+	XORQ R10, R10
 	JMP match_loop
 
 match_done:
