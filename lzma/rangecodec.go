@@ -323,15 +323,20 @@ func (d *rangeDecoder) updateCodeSlow() {
 	d.code = (d.code << 8) | uint32(b)
 }
 
+// readByteSlow refills the buffer and returns its first byte. A (0, nil)
+// read is legal for an io.Reader and is retried, bounded by
+// io.ErrNoProgress, as in breader.ReadByte.
 func (d *rangeDecoder) readByteSlow() (byte, error) {
-	n, err := d.r.Read(d.buf[:])
-	if n > 0 {
-		d.pos = 1
-		d.limit = n
-		return d.buf[0], nil
+	for i := 0; i < 100; i++ {
+		n, err := d.r.Read(d.buf[:])
+		if n > 0 {
+			d.pos = 1
+			d.limit = n
+			return d.buf[0], nil
+		}
+		if err != nil {
+			return 0, err
+		}
 	}
-	if err != nil {
-		return 0, err
-	}
-	return 0, io.EOF
+	return 0, io.ErrNoProgress
 }
