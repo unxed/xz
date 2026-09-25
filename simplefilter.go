@@ -200,8 +200,7 @@ type simpleReader struct {
 func (r *simpleReader) Read(p []byte) (n int, err error) {
 	for {
 		if r.ready > 0 {
-			n = min(len(p), r.ready)
-			copy(p[:n], r.buf[r.off:r.off+n])
+			n = copy(p, r.buf[r.off:r.off+r.ready])
 			r.off += n
 			r.ready -= n
 			// #nosec G115 -- the position wraps the same way the addresses in the data do
