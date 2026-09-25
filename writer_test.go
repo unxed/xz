@@ -201,3 +201,34 @@ func BenchmarkWriter(b *testing.B) {
 	}
 	b.ReportMetric(float64(buf.Len())/float64(len(data)), "rate")
 }
+
+func TestWriterWorkers(t *testing.T) {
+	var data bytes.Buffer
+	if _, err := io.CopyN(&data, randtxt.NewReader(rand.NewSource(8)),
+		3<<20); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	cfg := WriterConfig{DictCap: 1 << 20, BlockSize: 2 << 20, Workers: 3}
+	w, err := cfg.NewWriter(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = w.Write(data.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	if err = w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	r, err := NewReader(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, data.Bytes()) {
+		t.Fatal("round trip failed")
+	}
+}

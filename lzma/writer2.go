@@ -23,6 +23,15 @@ type Writer2Config struct {
 	BufSize int
 	// Match algorithm
 	Matcher MatchAlgorithm
+	// Workers gives the number of goroutines compressing in parallel.
+	// The values 0 and 1 select the sequential writer. With more
+	// workers the input is split into blocks of the dictionary
+	// capacity, but at least 1 MiB and at most 64 MiB, that are
+	// compressed independently, each starting with a dictionary
+	// reset. This costs some compression ratio and requires memory for
+	// a dictionary and a match finder per worker plus the buffered
+	// blocks. Close must be called to stop the workers.
+	Workers int
 }
 
 // fill replaces zero values with default values.
@@ -64,6 +73,9 @@ func (c *Writer2Config) Verify() error {
 	if err = c.Matcher.verify(); err != nil {
 		return err
 	}
+	if c.Workers < 0 {
+		return errors.New("lzma: number of workers is negative")
+	}
 	return nil
 }
 
@@ -87,6 +99,10 @@ type Writer2 struct {
 
 	buf bytes.Buffer
 	lbw LimitedByteWriter
+
+	// p is used instead of the fields above if the writer compresses
+	// in parallel.
+	p *parallelWriter2
 }
 
 // NewWriter2 creates an LZMA2 chunk sequence writer with the default
@@ -99,6 +115,9 @@ func NewWriter2(lzma2 io.Writer) (w *Writer2, err error) {
 func (c Writer2Config) NewWriter2(lzma2 io.Writer) (w *Writer2, err error) {
 	if err = c.Verify(); err != nil {
 		return nil, err
+	}
+	if c.Workers > 1 {
+		return &Writer2{p: newParallelWriter2(lzma2, c)}, nil
 	}
 	w = &Writer2{
 		w:      lzma2,
@@ -138,6 +157,9 @@ var errClosed = errors.New("lzma: writer closed")
 // Use Flush or Close to ensure that data is written to the underlying
 // writer.
 func (w *Writer2) Write(p []byte) (n int, err error) {
+	if w.p != nil {
+		return w.p.Write(p)
+	}
 	if w.cstate == stop {
 		return 0, errClosed
 	}
@@ -276,6 +298,9 @@ func (w *Writer2) flushChunk() error {
 // Flush writes all buffered data out to the underlying stream. This
 // could result in multiple chunks to be created.
 func (w *Writer2) Flush() error {
+	if w.p != nil {
+		return w.p.Flush()
+	}
 	if w.cstate == stop {
 		return errClosed
 	}
@@ -289,6 +314,9 @@ func (w *Writer2) Flush() error {
 
 // Close terminates the LZMA2 stream with an EOS chunk.
 func (w *Writer2) Close() error {
+	if w.p != nil {
+		return w.p.Close()
+	}
 	if w.cstate == stop {
 		return errClosed
 	}
@@ -302,4 +330,19 @@ func (w *Writer2) Close() error {
 	}
 	w.cstate = stop
 	return nil
+}
+
+// resetStream prepares the writer for a new, independent chunk sequence
+// written to lzma2. The dictionary and the match finder are reused. The
+// first chunk resets the dictionary, the state and the properties.
+func (w *Writer2) resetStream(lzma2 io.Writer) error {
+	w.w = lzma2
+	w.start = newState(w.start.Properties)
+	w.cstate = start
+	w.ctype = start.defaultChunkType()
+	w.buf.Reset()
+	w.lbw.N = maxCompressed
+	w.encoder.state = cloneState(w.start)
+	w.encoder.dict.Reset()
+	return w.encoder.Reopen(&w.lbw)
 }

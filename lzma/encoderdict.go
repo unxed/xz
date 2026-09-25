@@ -16,6 +16,8 @@ type matcher interface {
 	io.Writer
 	SetDict(d *encoderDict)
 	NextOp(rep [4]uint32) operation
+	// Reset returns the matcher to its initial state.
+	Reset()
 }
 
 // encoderDict provides the dictionary of the encoder. It includes an
@@ -147,3 +149,11 @@ func (d *encoderDict) CopyN(w io.Writer, n int) (written int, err error) {
 
 // Buffered returns the number of bytes in the buffer.
 func (d *encoderDict) Buffered() int { return d.buf.Buffered() }
+
+// Reset empties the dictionary and resets the matcher, so that the
+// dictionary can be reused for new data.
+func (d *encoderDict) Reset() {
+	d.buf.Reset()
+	d.head = 0
+	d.m.Reset()
+}

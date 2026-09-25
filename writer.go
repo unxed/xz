@@ -25,6 +25,10 @@ type WriterConfig struct {
 	NoCheckSum bool
 	// match algorithm
 	Matcher lzma.MatchAlgorithm
+	// Workers is the number of goroutines compressing the LZMA2 data
+	// of a block in parallel; see lzma.Writer2Config. The values 0 and
+	// 1 select sequential compression.
+	Workers int
 }
 
 // fill replaces zero values with default values.
@@ -61,6 +65,7 @@ func (c *WriterConfig) Verify() error {
 		DictCap:    c.DictCap,
 		BufSize:    c.BufSize,
 		Matcher:    c.Matcher,
+		Workers:    c.Workers,
 	}
 	if err := lc.Verify(); err != nil {
 		return err
