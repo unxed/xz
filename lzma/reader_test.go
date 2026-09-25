@@ -16,6 +16,45 @@ import (
 	"testing/iotest"
 )
 
+func TestReaderZeroNilReads(t *testing.T) {
+	stutter := &stutterReader{r: bytes.NewReader(make([]byte, 0))}
+
+	var buf bytes.Buffer
+	w, err := NewWriter(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("hello world ")
+	if _, err := w.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	stutter.r = bytes.NewReader(buf.Bytes())
+	r, err := NewReader(stutter)
+	if err != nil {
+		t.Fatalf("NewReader: %s", err)
+	}
+	if _, err := io.ReadAll(r); err != nil {
+		t.Fatalf("stutter decode: %s", err)
+	}
+}
+
+type stutterReader struct {
+	r    io.Reader
+	next bool
+}
+
+func (s *stutterReader) Read(p []byte) (int, error) {
+	s.next = !s.next
+	if s.next {
+		return 0, nil
+	}
+	return s.r.Read(p)
+}
+
 func TestNewReader(t *testing.T) {
 	f, err := os.Open("examples/a.lzma")
 	if err != nil {
