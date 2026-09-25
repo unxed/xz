@@ -149,6 +149,11 @@ func (c ReaderConfig) decodeBlock(r io.ReaderAt, b Block) ([]byte, error) {
 
 // Read reads decompressed data. It returns io.EOF after the last block.
 func (pr *ParallelReader) Read(p []byte) (n int, err error) {
+	select {
+	case <-pr.quit:
+		return 0, errParallelReaderClosed
+	default:
+	}
 	for n < len(p) {
 		if pr.current >= len(pr.blocks) {
 			if n > 0 {
