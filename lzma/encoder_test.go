@@ -71,7 +71,7 @@ func cycle(t *testing.T, n int) {
 		t.Fatalf("newDecoderDict error %s", err)
 	}
 	state.Reset()
-	r, err := newDecoder(&buf, state, decoderDict, -1)
+	r, err := newDecoder(&buf, true, state, decoderDict, -1)
 	if err != nil {
 		t.Fatalf("newDecoder error %s", err)
 	}
@@ -132,7 +132,7 @@ func TestEncoderCycle2(t *testing.T) {
 		t.Fatalf("NewDecoderDict error %s", err)
 	}
 	state.Reset()
-	r, err := newDecoder(buf, state, decoderDict, n)
+	r, err := newDecoder(buf, true, state, decoderDict, n)
 	if err != nil {
 		t.Fatalf("NewDecoder error %s", err)
 	}

@@ -133,7 +133,9 @@ func (r *Reader2) startChunk() error {
 	br := io.LimitReader(r.r, int64(header.compressed)+1)
 	if r.decoder == nil {
 		state := newState(header.props)
-		r.decoder, err = newDecoder(br, state, r.dict, size)
+		// br limits the input to the chunk, so the decoder may
+		// read ahead.
+		r.decoder, err = newDecoder(br, false, state, r.dict, size)
 		if err != nil {
 			return err
 		}

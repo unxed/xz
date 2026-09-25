@@ -212,11 +212,30 @@ type rangeDecoder struct {
 	pos    int
 	limit  int
 	err    error
+	// exact requests that no byte is read from r that the decoder
+	// doesn't consume; br is set if r is an io.ByteReader then.
+	exact bool
+	br    io.ByteReader
 }
 
+// newRangeDecoder creates a range decoder that reads its input in blocks
+// of up to 4096 bytes. The caller must ensure that r provides no data
+// after the end of the range-encoded stream, for instance by limiting it
+// with an io.LimitedReader, because the decoder may read beyond it.
 func newRangeDecoder(r io.Reader) (d *rangeDecoder, err error) {
-	d = &rangeDecoder{r: r, nrange: 0xffffffff}
+	return initRangeDecoder(&rangeDecoder{r: r, nrange: 0xffffffff})
+}
 
+// newExactRangeDecoder creates a range decoder that reads only the bytes
+// it consumes, so data following the range-encoded stream stays in r.
+func newExactRangeDecoder(r io.Reader) (d *rangeDecoder, err error) {
+	d = &rangeDecoder{r: r, nrange: 0xffffffff, exact: true}
+	d.br, _ = r.(io.ByteReader)
+	return initRangeDecoder(d)
+}
+
+// initRangeDecoder reads the first five bytes of the stream.
+func initRangeDecoder(d *rangeDecoder) (*rangeDecoder, error) {
 	b, err := d.readByteSlow()
 	if err != nil {
 		return nil, err
@@ -327,8 +346,15 @@ func (d *rangeDecoder) updateCodeSlow() {
 // read is legal for an io.Reader and is retried, bounded by
 // io.ErrNoProgress, as in breader.ReadByte.
 func (d *rangeDecoder) readByteSlow() (byte, error) {
+	p := d.buf[:]
+	if d.exact {
+		if d.br != nil {
+			return d.br.ReadByte()
+		}
+		p = d.buf[:1]
+	}
 	for i := 0; i < 100; i++ {
-		n, err := d.r.Read(d.buf[:])
+		n, err := d.r.Read(p)
 		if n > 0 {
 			d.pos = 1
 			d.limit = n

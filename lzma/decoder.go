@@ -28,32 +28,45 @@ type decoder struct {
 	eos bool
 	// EOS marker found
 	eosMarker bool
+	// exact requests that the range decoder doesn't read ahead
+	exact bool
 }
 
 // newDecoder creates a new decoder instance. The parameter size provides
 // the expected byte size of the decompressed data. If the size is
 // unknown use a negative value. In that case the decoder will look for
 // a terminating end-of-stream marker.
-func newDecoder(r io.Reader, state *state, dict *decoderDict, size int64) (d *decoder, err error) {
-	rd, err := newRangeDecoder(r)
-	if err != nil {
-		return nil, err
-	}
+//
+// If exact is set, the decoder reads only the bytes of the LZMA stream
+// from r. Otherwise it reads r in blocks and r must not provide data
+// after the stream.
+func newDecoder(r io.Reader, exact bool, state *state, dict *decoderDict, size int64) (d *decoder, err error) {
 	d = &decoder{
 		State: state,
 		Dict:  dict,
-		rd:    rd,
 		size:  size,
 		start: dict.pos(),
+		exact: exact,
+	}
+	if d.rd, err = d.newRangeDecoder(r); err != nil {
+		return nil, err
 	}
 	return d, nil
+}
+
+// newRangeDecoder creates the range decoder for the decoder.
+func (d *decoder) newRangeDecoder(r io.Reader) (*rangeDecoder, error) {
+	if d.exact {
+		return newExactRangeDecoder(r)
+	}
+	return newRangeDecoder(r)
 }
 
 // Reopen restarts the decoder with a new byte reader and a new size. Reopen
 // resets the Decompressed counter to zero.
 func (d *decoder) Reopen(r io.Reader, size int64) error {
 	var err error
-	if d.rd, err = newRangeDecoder(r); err != nil {
+	if d.rd, err = d.newRangeDecoder(r); err != nil {
 		return err
 	}
 	d.start = d.Dict.pos()

@@ -167,7 +167,9 @@ func (c ReaderConfig) NewReader(lzma io.Reader) (r *Reader, err error) {
 	if err != nil {
 		return nil, err
 	}
-	r.d, err = newDecoder(lzma, state, dict, r.header.Size)
+	// The decoder must not read ahead, because the LZMA stream may be
+	// followed by other data in the underlying reader.
+	r.d, err = newDecoder(lzma, true, state, dict, r.header.Size)
 	if err != nil {
 		return nil, err
 	}
