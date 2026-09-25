@@ -88,7 +88,8 @@ func (e *rangeEncoder) DirectEncodeBit(b uint32) error {
 		return nil
 	}
 	e.nrange <<= 8
-	if e.outBuf != nil {
+	if e.outPos+int(e.cacheLen) <= len(e.outBuf) {
+		// fast path: the bytes shifted out fit into the buffer
 		if uint32(e.low) < 0xff000000 || (e.low>>32) != 0 {
 			tmp := e.cache
 			if e.cacheLen == 1 {
@@ -135,7 +136,8 @@ func (e *rangeEncoder) EncodeBit(b uint32, p *prob) error {
 		return nil
 	}
 	e.nrange <<= 8
-	if e.outBuf != nil {
+	if e.outPos+int(e.cacheLen) <= len(e.outBuf) {
+		// fast path: the bytes shifted out fit into the buffer
 		if uint32(e.low) < 0xff000000 || (e.low>>32) != 0 {
 			tmp := e.cache
 			if e.cacheLen == 1 {

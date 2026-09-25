@@ -79,7 +79,15 @@ func (c *literalCodec) Encode(e *rangeEncoder, s byte,
 
 			if nrange < (1 << 24) {
 				nrange <<= 8
-				if uint32(low) < 0xff000000 || (low>>32) != 0 {
+				if e.outPos+int(e.cacheLen) > len(e.outBuf) {
+					// slow path: flush the buffer
+					e.low = low
+					if err = e.shiftLow(); err != nil {
+						e.nrange = nrange
+						return err
+					}
+					low = e.low
+				} else if uint32(low) < 0xff000000 || (low>>32) != 0 {
 					tmp := e.cache
 					if e.cacheLen == 1 {
 						e.outBuf[e.outPos] = tmp + byte(low>>32)
@@ -99,9 +107,12 @@ func (c *literalCodec) Encode(e *rangeEncoder, s byte,
 						}
 					}
 					e.cache = byte(uint32(low) >> 24)
+					e.cacheLen++
+					low = uint64(uint32(low) << 8)
+				} else {
+					e.cacheLen++
+					low = uint64(uint32(low) << 8)
 				}
-				e.cacheLen++
-				low = uint64(uint32(low) << 8)
 			}
 
 			symbol = (symbol << 1) | bit
@@ -131,7 +142,15 @@ func (c *literalCodec) Encode(e *rangeEncoder, s byte,
 
 		if nrange < (1 << 24) {
 			nrange <<= 8
-			if uint32(low) < 0xff000000 || (low>>32) != 0 {
+			if e.outPos+int(e.cacheLen) > len(e.outBuf) {
+				// slow path: flush the buffer
+				e.low = low
+				if err = e.shiftLow(); err != nil {
+					e.nrange = nrange
+					return err
+				}
+				low = e.low
+			} else if uint32(low) < 0xff000000 || (low>>32) != 0 {
 				tmp := e.cache
 				if e.cacheLen == 1 {
 					e.outBuf[e.outPos] = tmp + byte(low>>32)
@@ -151,9 +170,12 @@ func (c *literalCodec) Encode(e *rangeEncoder, s byte,
 					}
 				}
 				e.cache = byte(uint32(low) >> 24)
+				e.cacheLen++
+				low = uint64(uint32(low) << 8)
+			} else {
+				e.cacheLen++
+				low = uint64(uint32(low) << 8)
 			}
-			e.cacheLen++
-			low = uint64(uint32(low) << 8)
 		}
 
 		symbol = (symbol << 1) | bit
