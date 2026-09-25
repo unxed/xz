@@ -122,6 +122,31 @@ func (r *Reader) Read(p []byte) (n int, err error) {
 	return n, nil
 }
 
+// NewBlockReader creates a reader for a single xz block. The reader r must
+// be positioned at the start of the block header, which is Block.Offset for
+// a block returned by ParseBlocks. The streamFlags byte gives the check type
+// of the stream containing the block; ParseBlocks provides it as
+// Block.StreamFlags. The returned reader verifies the block padding and
+// the check when it reaches the end of the block.
+func (c ReaderConfig) NewBlockReader(r io.Reader, streamFlags byte) (io.Reader, error) {
+	if err := c.Verify(); err != nil {
+		return nil, err
+	}
+	bh, hlen, err := readBlockHeader(r)
+	if err != nil {
+		return nil, err
+	}
+	newHash, err := newHashFunc(streamFlags)
+	if err != nil {
+		return nil, err
+	}
+	br, err := c.newBlockReader(r, bh, hlen, newHash())
+	if err != nil {
+		return nil, err
+	}
+	return br, nil
+}
+
 var errPadding = errors.New("xz: padding (4 zero bytes) encountered")
 
 // newStreamReader creates a new xz stream reader using the given configuration

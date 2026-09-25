@@ -661,7 +661,8 @@ func writeIndex(w io.Writer, index []record) (n int64, err error) {
 }
 
 // readIndexBody reads the index from the reader. It assumes that the
-// index indicator has already been read.
+// index indicator has already been read. A negative expectedRecordLen
+// accepts any number of records.
 func readIndexBody(r io.Reader, expectedRecordLen int) (records []record, n int64, err error) {
 	crc := crc32.NewIEEE()
 	// index indicator
@@ -679,20 +680,26 @@ func readIndexBody(r io.Reader, expectedRecordLen int) (records []record, n int6
 	if recLen < 0 || uint64(recLen) != u {
 		return nil, n, errors.New("xz: record number overflow")
 	}
-	if recLen != expectedRecordLen {
+	if expectedRecordLen >= 0 && recLen != expectedRecordLen {
 		return nil, n, fmt.Errorf(
 			"xz: index length is %d; want %d",
 			recLen, expectedRecordLen)
 	}
 
 	// list of records
-	records = make([]record, recLen)
-	for i := range records {
-		records[i], k, err = readRecord(br)
+	if expectedRecordLen >= 0 {
+		records = make([]record, 0, recLen)
+	}
+	// Without an expected length the number of records comes from
+	// untrusted input; the slice grows only with records actually read.
+	for i := 0; i < recLen; i++ {
+		var rec record
+		rec, k, err = readRecord(br)
 		n += int64(k)
 		if err != nil {
 			return nil, n, err
 		}
+		records = append(records, rec)
 	}
 
 	p := make([]byte, padLen(int64(n+1)), 4)
