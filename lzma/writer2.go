@@ -27,23 +27,6 @@ type Writer2Config struct {
 	Matcher MatchAlgorithm
 	// Number of concurrent compression workers. If 0, runtime.GOMAXPROCS(0) is used.
 	Concurrency int
-	// AdaptiveEffort was designed to enable per-block compression-effort
-	// selection: each parallel block (the same granularity at which
-	// Writer2 already starts a fresh LZMA2 chunk sequence) would be
-	// scored with internal/redundancy.EstimateRedundancy before
-	// compression, and a highly redundant block matched with BinaryTree
-	// (deeper search, better ratio) while a near-random block would be
-	// matched with the cheaper HashTable4, overriding Matcher for that
-	// one block.
-	//
-	// That BinaryTree arm is currently disabled: see the doc comment on
-	// selectAdaptiveMatcher for a real, pre-existing hazard in
-	// bintree.go it triggers on exactly the kind of data this option
-	// targets (unxed/zipper#20, part 3). Until a follow-up ticket fixes
-	// that, this field, when true, behaves identically to false --
-	// Matcher stays fixed for the whole stream exactly as before this
-	// option existed. It defaults to false regardless.
-	AdaptiveEffort bool
 }
 
 // fill replaces zero values with default values.
@@ -452,162 +435,31 @@ func emitUncompressedLZMA2(out *bytes.Buffer, data []byte) error {
 	return nil
 }
 
-// newChunkSeqWriter builds a seqWriter2 (an LZMA2 chunk-sequence encoder
-// with its own dictionary and matcher) for one match algorithm, using the
-// worker's DictCap/BufSize/Properties. worker keeps at most one of these
-// per algorithm it actually ends up using, and resets and reuses it across
-// jobs rather than rebuilding it per block.
-func (w *Writer2) newChunkSeqWriter(alg MatchAlgorithm, startState *state) (*seqWriter2, error) {
-	m, err := alg.new(w.config.DictCap)
-	if err != nil {
-		return nil, err
-	}
-	d, err := newEncoderDict(w.config.DictCap, w.config.BufSize, m)
-	if err != nil {
-		return nil, err
-	}
-
-	sw := &seqWriter2{
-		start:  cloneState(startState),
-		cstate: start,
-		ctype:  start.defaultChunkType(),
-	}
-	sw.buf.Grow(maxCompressed)
-	sw.lbw = LimitedByteWriter{BW: &sw.buf, N: maxCompressed}
-	sw.encoder, err = newEncoder(&sw.lbw, cloneState(startState), d, 0)
-	if err != nil {
-		return nil, err
-	}
-	return sw, nil
-}
-
-// compressBlockChunks resets sw for reuse and writes all of data into it as
-// one or more LZMA2 chunks, flushing whatever chunk state building up in sw
-// out to job.out.
-func compressBlockChunks(sw *seqWriter2, job *chunkJob) error {
-	job.out.Reset()
-	sw.w = job.out
-	sw.cstate = start
-	sw.ctype = start.defaultChunkType()
-	sw.start.Reset()
-
-	sw.encoder.state.deepcopy(sw.start)
-	sw.encoder.dict.Reset()
-	sw.buf.Reset()
-	sw.lbw.N = maxCompressed
-	sw.encoder.Reopen(&sw.lbw)
-
-	n := 0
-	var jobErr error
-	for n < len(job.data) {
-		m := maxUncompressed - sw.written()
-		if m <= 0 {
-			panic("lzma: maxUncompressed reached")
-		}
-		var q []byte
-		if n+m < len(job.data) {
-			q = job.data[n : n+m]
-		} else {
-			q = job.data[n:]
-		}
-		k, e := sw.encoder.Write(q)
-		n += k
-		if e != nil && e != ErrLimit {
-			jobErr = e
-			break
-		}
-		if e == ErrLimit || k == m {
-			jobErr = sw.flushChunk()
-			if jobErr != nil {
-				break
-			}
-		}
-	}
-	if jobErr == nil {
-		jobErr = sw.Flush()
-	}
-	return jobErr
-}
-
-// adaptiveEffortThreshold was the internal/redundancy.EstimateRedundancy
-// score at or above which selectAdaptiveMatcher picked BinaryTree instead
-// of HashTable4. Kept only as documentation of the originally intended
-// policy threshold; see selectAdaptiveMatcher for why it is not currently
-// acted on.
-const adaptiveEffortThreshold = 0.5
-
-// selectAdaptiveMatcher was meant to map a redundancy score in [0, 1] to
-// the match algorithm adaptiveMatcher should use for a block that scored
-// it: BinaryTree (deeper search, better ratio) at or above
-// adaptiveEffortThreshold, HashTable4 (cheap) below it.
-//
-// It unconditionally returns HashTable4 right now. Investigating the CI
-// hang in TestWriter2_AdaptiveEffortRoundtrip (unxed/zipper#20, part 3)
-// found a real, pre-existing defect in bintree.go: binTree.add has no
-// bound on how deep an insertion may walk (unlike its match search, which
-// matchParams.check does cap). A block whose content repeats with a short
-// period relative to the 4-byte match-finder word -- a run of the same
-// padding byte, a repeated header, or, as in the roundtrip test, a short
-// ASCII pattern tiled to fill a block -- collapses almost all of that
-// block's insertions onto a handful of degenerate chains, each insertion
-// costing O(current chain length), i.e. an O(n^2)-class cost in the block
-// size. Two independent CI runs (actions/runs/36296627040 and
-// .../36297083159) both hit the 10-minute test timeout inside binTree.add
-// (via NextOp) while compressing a single 1 MiB block of exactly this kind
-// of data with BinaryTree; the arithmetic backs that up too -- that
-// block's 27-byte-periodic content collapses onto 27 chains averaging
-// ~38845 nodes each, tens of billions of node visits, further amplified by
-// -race instrumentation.
-//
-// That is exactly the class of input EstimateRedundancy is designed to
-// flag as "highly redundant" -- padding and repeated structure are common
-// in real archives, not just this test's construction -- so wiring this
-// function's original BinaryTree branch into production would trade an
-// occasional ratio win for an unbounded stall on the very inputs it
-// targets. Fixing that means bounding insertion depth in bintree.go itself
-// (mirroring the depth/nice-length limits real BT4 implementations use),
-// which touches the match finder every existing BinaryTree caller relies
-// on and needs its own dedicated verification -- out of scope for this
-// VBR-heuristics ticket. Until that lands in a follow-up ticket,
-// AdaptiveEffort as a whole is a safe no-op: same matcher, same ratio,
-// same speed as AdaptiveEffort=false.
-func selectAdaptiveMatcher(score float64) MatchAlgorithm {
-	_ = score
-	return HashTable4
-}
-
-// adaptiveMatcher returns the MatchAlgorithm that should compress data: the
-// configured Matcher unchanged when cfg.AdaptiveEffort is off (the
-// pre-existing, unconditional behavior), or, when it is on, HashTable4
-// (selectAdaptiveMatcher's only current output; see its doc comment for
-// why). It intentionally does not call internal/redundancy.EstimateRedundancy
-// in that case: BenchmarkAdaptiveEffort_Redundant caught that doing so
-// anyway, only to hand the discarded score to a function that always
-// returns HashTable4, cost real CPU (~47% slower ns/op there than
-// AdaptiveEffort=false) for zero behavioral difference. Reinstate that
-// call only alongside re-enabling selectAdaptiveMatcher's BinaryTree arm.
-func adaptiveMatcher(cfg Writer2Config, data []byte) MatchAlgorithm {
-	if !cfg.AdaptiveEffort {
-		return cfg.Matcher
-	}
-	return selectAdaptiveMatcher(0)
-}
-
 func (w *Writer2) worker() {
 	defer w.wg.Done()
 
 	startState := newState(*w.config.Properties)
 
-	// seqWriters caches one seqWriter2 per match algorithm actually used
-	// by this worker so far. Off (the default), only w.config.Matcher's
-	// entry is ever created, matching the pre-AdaptiveEffort behavior
-	// exactly. On, a second entry for the other algorithm is built
-	// lazily, the first time some block actually needs it, and then
-	// reused like the first.
-	seqWriters := make(map[MatchAlgorithm]*seqWriter2, 2)
-	seqW, err := w.newChunkSeqWriter(w.config.Matcher, startState)
+	m, err := w.config.Matcher.new(w.config.DictCap)
+	if err != nil {
+		// Suppress completely, unlikely to ever occur with verified configs
+	}
+	d, err := newEncoderDict(w.config.DictCap, w.config.BufSize, m)
+	if err != nil {
+	}
+
+	var seqW *seqWriter2
 	if err == nil {
-		seqWriters[w.config.Matcher] = seqW
+		seqW = &seqWriter2{
+			w:      nil,
+			start:  cloneState(startState),
+			cstate: start,
+			ctype:  start.defaultChunkType(),
+		}
+		seqW.buf.Grow(maxCompressed)
+		seqW.lbw = LimitedByteWriter{BW: &seqW.buf, N: maxCompressed}
+
+		seqW.encoder, err = newEncoder(&seqW.lbw, cloneState(startState), d, 0)
 	}
 
 	for job := range w.jobs {
@@ -625,27 +477,56 @@ func (w *Writer2) worker() {
 
 		job.out = outBufPool.Get().(*bytes.Buffer)
 
+		compressNormally := func() error {
+			job.out.Reset()
+			seqW.w = job.out
+			seqW.cstate = start
+			seqW.ctype = start.defaultChunkType()
+			seqW.start.Reset()
+
+			seqW.encoder.state.deepcopy(seqW.start)
+			seqW.encoder.dict.Reset()
+			seqW.buf.Reset()
+			seqW.lbw.N = maxCompressed
+			seqW.encoder.Reopen(&seqW.lbw)
+
+			n := 0
+			var jobErr error
+			for n < len(job.data) {
+				m := maxUncompressed - seqW.written()
+				if m <= 0 {
+					panic("lzma: maxUncompressed reached")
+				}
+				var q []byte
+				if n+m < len(job.data) {
+					q = job.data[n : n+m]
+				} else {
+					q = job.data[n:]
+				}
+				k, e := seqW.encoder.Write(q)
+				n += k
+				if e != nil && e != ErrLimit {
+					jobErr = e
+					break
+				}
+				if e == ErrLimit || k == m {
+					jobErr = seqW.flushChunk()
+					if jobErr != nil {
+						break
+					}
+				}
+			}
+			if jobErr == nil {
+				jobErr = seqW.Flush()
+			}
+			return jobErr
+		}
+
 		if job.minimal {
 			job.out.Reset()
 			job.err = emitUncompressedLZMA2(job.out, job.data)
 		} else {
-			alg := adaptiveMatcher(w.config, job.data)
-			sw, ok := seqWriters[alg]
-			if !ok {
-				var buildErr error
-				sw, buildErr = w.newChunkSeqWriter(alg, startState)
-				if buildErr != nil {
-					// Building the alternate matcher failed -- unexpected,
-					// since the primary one already succeeded with the
-					// same DictCap/BufSize. Fall back to the primary
-					// matcher for this one block rather than failing the
-					// job over an effort optimization.
-					sw = seqWriters[w.config.Matcher]
-				} else {
-					seqWriters[alg] = sw
-				}
-			}
-			job.err = compressBlockChunks(sw, job)
+			job.err = compressNormally()
 		}
 
 		if cap(job.data) > 0 {
