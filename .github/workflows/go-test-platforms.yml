@@ -24,13 +24,6 @@ jobs:
       # https://go.dev/doc/articles/race_detector
       - run: GOARCH=386 go test ./...
 
-      # unxed/zipper#20 part 3: measure Writer2Config.AdaptiveEffort
-      # (lzma/adaptive_effort_bench_test.go) instead of assuming it helps.
-      # -benchtime=3x pins the iteration count so CI time doesn't depend on
-      # how fast the runner happens to be; the ns/op, MB/s and the custom
-      # ratio/compressed-bytes metrics all land in this step's log.
-      - run: go test -run '^$' -bench AdaptiveEffort -benchtime=3x -benchmem ./lzma/...
-
   go-test-windows:
     runs-on: windows-latest
     steps:
