@@ -78,6 +78,16 @@ func Analyze(data []byte) Metrics {
 // real data; callers with more specific needs should use Analyze
 // directly instead.
 func EstimateRedundancy(data []byte) float64 {
+	if len(data) == 0 {
+		// entropy(nil) == 0 by definition (an empty sum), but that is
+		// a degenerate boundary value, not a signal that the data is
+		// redundant: there is nothing to compress. Treat it as such
+		// explicitly, rather than letting it fall through to the
+		// entropy/8 formula below, which would otherwise read a zero
+		// entropy as maximal redundancy.
+		return 0
+	}
+
 	m := Analyze(data)
 
 	entropyRedundancy := 1 - m.Entropy/8
