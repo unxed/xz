@@ -10,6 +10,8 @@ import (
 	"io"
 	"runtime"
 	"sync"
+
+	"github.com/unxed/xz/internal/redundancy"
 )
 
 // Writer2Config is used to create a Writer2 using parameters.
@@ -27,6 +29,23 @@ type Writer2Config struct {
 	Matcher MatchAlgorithm
 	// Number of concurrent compression workers. If 0, runtime.GOMAXPROCS(0) is used.
 	Concurrency int
+	// AdaptiveEffort enables per-block compression-effort selection: each
+	// parallel block (the same granularity at which Writer2 already
+	// starts a fresh LZMA2 chunk sequence) is scored with
+	// internal/redundancy.EstimateRedundancy before compression, and a
+	// highly redundant block is matched with BinaryTree (deeper search,
+	// better ratio) while a near-random block is matched with the
+	// cheaper HashTable4, overriding Matcher for that one block. Blocks
+	// already routed around the matcher entirely by the existing
+	// near-incompressible fast path (stored uncompressed) are
+	// unaffected.
+	//
+	// This is deliberately a simple, single-threshold policy (see
+	// selectAdaptiveMatcher): the trade-off has not been validated
+	// against real-world data yet (unxed/zipper#20, part 3), so it
+	// defaults to false, which keeps Matcher fixed for the whole stream
+	// exactly as before this option existed.
+	AdaptiveEffort bool
 }
 
 // fill replaces zero values with default values.
@@ -435,31 +454,125 @@ func emitUncompressedLZMA2(out *bytes.Buffer, data []byte) error {
 	return nil
 }
 
+// newChunkSeqWriter builds a seqWriter2 (an LZMA2 chunk-sequence encoder
+// with its own dictionary and matcher) for one match algorithm, using the
+// worker's DictCap/BufSize/Properties. worker keeps at most one of these
+// per algorithm it actually ends up using, and resets and reuses it across
+// jobs rather than rebuilding it per block.
+func (w *Writer2) newChunkSeqWriter(alg MatchAlgorithm, startState *state) (*seqWriter2, error) {
+	m, err := alg.new(w.config.DictCap)
+	if err != nil {
+		return nil, err
+	}
+	d, err := newEncoderDict(w.config.DictCap, w.config.BufSize, m)
+	if err != nil {
+		return nil, err
+	}
+
+	sw := &seqWriter2{
+		start:  cloneState(startState),
+		cstate: start,
+		ctype:  start.defaultChunkType(),
+	}
+	sw.buf.Grow(maxCompressed)
+	sw.lbw = LimitedByteWriter{BW: &sw.buf, N: maxCompressed}
+	sw.encoder, err = newEncoder(&sw.lbw, cloneState(startState), d, 0)
+	if err != nil {
+		return nil, err
+	}
+	return sw, nil
+}
+
+// compressBlockChunks resets sw for reuse and writes all of data into it as
+// one or more LZMA2 chunks, flushing whatever chunk state building up in sw
+// out to job.out.
+func compressBlockChunks(sw *seqWriter2, job *chunkJob) error {
+	job.out.Reset()
+	sw.w = job.out
+	sw.cstate = start
+	sw.ctype = start.defaultChunkType()
+	sw.start.Reset()
+
+	sw.encoder.state.deepcopy(sw.start)
+	sw.encoder.dict.Reset()
+	sw.buf.Reset()
+	sw.lbw.N = maxCompressed
+	sw.encoder.Reopen(&sw.lbw)
+
+	n := 0
+	var jobErr error
+	for n < len(job.data) {
+		m := maxUncompressed - sw.written()
+		if m <= 0 {
+			panic("lzma: maxUncompressed reached")
+		}
+		var q []byte
+		if n+m < len(job.data) {
+			q = job.data[n : n+m]
+		} else {
+			q = job.data[n:]
+		}
+		k, e := sw.encoder.Write(q)
+		n += k
+		if e != nil && e != ErrLimit {
+			jobErr = e
+			break
+		}
+		if e == ErrLimit || k == m {
+			jobErr = sw.flushChunk()
+			if jobErr != nil {
+				break
+			}
+		}
+	}
+	if jobErr == nil {
+		jobErr = sw.Flush()
+	}
+	return jobErr
+}
+
+// adaptiveEffortThreshold is the internal/redundancy.EstimateRedundancy
+// score at or above which adaptiveMatcher picks BinaryTree (deeper search,
+// better ratio) instead of HashTable4 (cheap) when AdaptiveEffort is
+// enabled. This is a first, deliberately simple cut, not a value tuned
+// against real-world data -- see unxed/zipper#20, part 3.
+const adaptiveEffortThreshold = 0.5
+
+// selectAdaptiveMatcher maps a redundancy score in [0, 1] to the match
+// algorithm adaptiveMatcher should use for a block that scored it.
+func selectAdaptiveMatcher(score float64) MatchAlgorithm {
+	if score >= adaptiveEffortThreshold {
+		return BinaryTree
+	}
+	return HashTable4
+}
+
+// adaptiveMatcher returns the MatchAlgorithm that should compress data: the
+// configured Matcher unchanged when cfg.AdaptiveEffort is off (the
+// pre-existing, unconditional behavior), or a per-block choice driven by
+// internal/redundancy.EstimateRedundancy(data) when it is on.
+func adaptiveMatcher(cfg Writer2Config, data []byte) MatchAlgorithm {
+	if !cfg.AdaptiveEffort {
+		return cfg.Matcher
+	}
+	return selectAdaptiveMatcher(redundancy.EstimateRedundancy(data))
+}
+
 func (w *Writer2) worker() {
 	defer w.wg.Done()
 
 	startState := newState(*w.config.Properties)
 
-	m, err := w.config.Matcher.new(w.config.DictCap)
-	if err != nil {
-		// Suppress completely, unlikely to ever occur with verified configs
-	}
-	d, err := newEncoderDict(w.config.DictCap, w.config.BufSize, m)
-	if err != nil {
-	}
-
-	var seqW *seqWriter2
+	// seqWriters caches one seqWriter2 per match algorithm actually used
+	// by this worker so far. Off (the default), only w.config.Matcher's
+	// entry is ever created, matching the pre-AdaptiveEffort behavior
+	// exactly. On, a second entry for the other algorithm is built
+	// lazily, the first time some block actually needs it, and then
+	// reused like the first.
+	seqWriters := make(map[MatchAlgorithm]*seqWriter2, 2)
+	seqW, err := w.newChunkSeqWriter(w.config.Matcher, startState)
 	if err == nil {
-		seqW = &seqWriter2{
-			w:      nil,
-			start:  cloneState(startState),
-			cstate: start,
-			ctype:  start.defaultChunkType(),
-		}
-		seqW.buf.Grow(maxCompressed)
-		seqW.lbw = LimitedByteWriter{BW: &seqW.buf, N: maxCompressed}
-
-		seqW.encoder, err = newEncoder(&seqW.lbw, cloneState(startState), d, 0)
+		seqWriters[w.config.Matcher] = seqW
 	}
 
 	for job := range w.jobs {
@@ -477,56 +590,27 @@ func (w *Writer2) worker() {
 
 		job.out = outBufPool.Get().(*bytes.Buffer)
 
-		compressNormally := func() error {
-			job.out.Reset()
-			seqW.w = job.out
-			seqW.cstate = start
-			seqW.ctype = start.defaultChunkType()
-			seqW.start.Reset()
-
-			seqW.encoder.state.deepcopy(seqW.start)
-			seqW.encoder.dict.Reset()
-			seqW.buf.Reset()
-			seqW.lbw.N = maxCompressed
-			seqW.encoder.Reopen(&seqW.lbw)
-
-			n := 0
-			var jobErr error
-			for n < len(job.data) {
-				m := maxUncompressed - seqW.written()
-				if m <= 0 {
-					panic("lzma: maxUncompressed reached")
-				}
-				var q []byte
-				if n+m < len(job.data) {
-					q = job.data[n : n+m]
-				} else {
-					q = job.data[n:]
-				}
-				k, e := seqW.encoder.Write(q)
-				n += k
-				if e != nil && e != ErrLimit {
-					jobErr = e
-					break
-				}
-				if e == ErrLimit || k == m {
-					jobErr = seqW.flushChunk()
-					if jobErr != nil {
-						break
-					}
-				}
-			}
-			if jobErr == nil {
-				jobErr = seqW.Flush()
-			}
-			return jobErr
-		}
-
 		if job.minimal {
 			job.out.Reset()
 			job.err = emitUncompressedLZMA2(job.out, job.data)
 		} else {
-			job.err = compressNormally()
+			alg := adaptiveMatcher(w.config, job.data)
+			sw, ok := seqWriters[alg]
+			if !ok {
+				var buildErr error
+				sw, buildErr = w.newChunkSeqWriter(alg, startState)
+				if buildErr != nil {
+					// Building the alternate matcher failed -- unexpected,
+					// since the primary one already succeeded with the
+					// same DictCap/BufSize. Fall back to the primary
+					// matcher for this one block rather than failing the
+					// job over an effort optimization.
+					sw = seqWriters[w.config.Matcher]
+				} else {
+					seqWriters[alg] = sw
+				}
+			}
+			job.err = compressBlockChunks(sw, job)
 		}
 
 		if cap(job.data) > 0 {
