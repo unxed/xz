@@ -316,8 +316,12 @@ func TestWriter2_StateTransitions(t *testing.T) {
 	}
 }
 
-// TestSelectAdaptiveMatcher checks the threshold behavior of the pure
-// score-to-algorithm mapping adaptiveMatcher relies on.
+// TestSelectAdaptiveMatcher checks that selectAdaptiveMatcher currently
+// returns HashTable4 for every score, i.e. that its BinaryTree arm stays
+// disabled regardless of adaptiveEffortThreshold. See the doc comment on
+// selectAdaptiveMatcher for the bintree.go insertion-depth hazard
+// (unxed/zipper#20, part 3) that makes routing to BinaryTree unsafe until
+// a follow-up ticket fixes it.
 func TestSelectAdaptiveMatcher(t *testing.T) {
 	cases := []struct {
 		score float64
@@ -325,9 +329,9 @@ func TestSelectAdaptiveMatcher(t *testing.T) {
 	}{
 		{0, HashTable4},
 		{adaptiveEffortThreshold - 0.01, HashTable4},
-		{adaptiveEffortThreshold, BinaryTree},
-		{adaptiveEffortThreshold + 0.01, BinaryTree},
-		{1, BinaryTree},
+		{adaptiveEffortThreshold, HashTable4},
+		{adaptiveEffortThreshold + 0.01, HashTable4},
+		{1, HashTable4},
 	}
 	for _, c := range cases {
 		if got := selectAdaptiveMatcher(c.score); got != c.want {
@@ -355,17 +359,20 @@ func TestAdaptiveMatcher_DisabledKeepsConfiguredMatcher(t *testing.T) {
 	}
 }
 
-// TestAdaptiveMatcher_RedundantVsRandom demonstrates the actual point of
-// part 2 of unxed/zipper#20: with AdaptiveEffort on, adaptiveMatcher (the
-// function worker calls for every real, non-minimal block) picks a
-// different, real MatchAlgorithm for a highly redundant block than for a
-// near-random one, driven by internal/redundancy.EstimateRedundancy.
+// TestAdaptiveMatcher_RedundantVsRandom documents the current state of
+// part 2/3 of unxed/zipper#20: with AdaptiveEffort on, adaptiveMatcher (the
+// function worker calls for every real, non-minimal block) now returns
+// HashTable4 for both a highly redundant block and a near-random one. It
+// used to assert BinaryTree for the redundant case -- that arm was
+// disabled after CI found it hangs for minutes on exactly this class of
+// input; see the doc comment on selectAdaptiveMatcher for why.
 func TestAdaptiveMatcher_RedundantVsRandom(t *testing.T) {
 	// A block built from the same chunk repeated many times: near-random
 	// byte frequencies would not flag it, but DuplicateRatio does -- the
 	// same case internal/redundancy's own tests use to demonstrate its
 	// blind spot for pure entropy (see internal/redundancy's
-	// TestDuplicateRatio_RepeatedBlock).
+	// TestDuplicateRatio_RepeatedBlock). It is also, not coincidentally,
+	// the same short-period shape that makes BinaryTree unsafe here.
 	redundant := bytes.Repeat([]byte("redundant-chunk-data-block-"), 3000)
 
 	// A uniformly random block of the same size: both signals should read
@@ -375,22 +382,30 @@ func TestAdaptiveMatcher_RedundantVsRandom(t *testing.T) {
 
 	cfg := Writer2Config{AdaptiveEffort: true}
 
-	if got := adaptiveMatcher(cfg, redundant); got != BinaryTree {
-		t.Errorf("adaptiveMatcher on a highly redundant block = %v; want BinaryTree (raised effort)", got)
+	if got := adaptiveMatcher(cfg, redundant); got != HashTable4 {
+		t.Errorf("adaptiveMatcher on a highly redundant block = %v; want HashTable4 (BinaryTree arm currently disabled)", got)
 	}
 	if got := adaptiveMatcher(cfg, random); got != HashTable4 {
-		t.Errorf("adaptiveMatcher on a near-random block = %v; want HashTable4 (lowered effort)", got)
+		t.Errorf("adaptiveMatcher on a near-random block = %v; want HashTable4", got)
 	}
 }
 
 // TestWriter2_AdaptiveEffortRoundtrip is the integration-level safety net
 // for the wiring in worker(): with AdaptiveEffort on and Concurrency
-// pinned to 1, a single worker processes several blocks whose adaptive
-// choice alternates between the default primary matcher (HashTable4) and
-// the lazily built, cached alternate (BinaryTree) for a run of highly
-// redundant blocks -- exercising both the lazy build and its reuse from
-// the cache -- and the stream still has to decompress back to the exact
-// input.
+// pinned to 1, a single worker processes a run of highly redundant blocks
+// (a short ASCII pattern tiled to fill each block) interleaved with random
+// ones, and the stream still has to decompress back to the exact input.
+//
+// This used to also exercise adaptiveMatcher's lazy-build-and-cache path
+// for a second, genuinely different match algorithm (BinaryTree) on the
+// redundant blocks. It no longer does: selectAdaptiveMatcher's BinaryTree
+// arm is currently disabled (see its doc comment) precisely because these
+// same short-period redundant blocks drive bintree.go's unbounded-depth
+// insertion into an O(n^2)-class stall -- this test is what caught that,
+// via two CI runs timing out after 10 minutes instead of finishing. With
+// the arm disabled, adaptiveMatcher always agrees with the default
+// Matcher (HashTable4) here, so this test now mainly guards against a
+// regression back to that hang, plus basic roundtrip correctness.
 func TestWriter2_AdaptiveEffortRoundtrip(t *testing.T) {
 	blockSize := 1024 * 1024
 

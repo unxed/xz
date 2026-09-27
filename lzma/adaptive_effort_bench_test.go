@@ -136,9 +136,14 @@ func benchmarkAdaptiveEffortDataset(b *testing.B, data []byte) {
 }
 
 // BenchmarkAdaptiveEffort_Redundant compares AdaptiveEffort on highly
-// redundant, repeated-block data: the case AdaptiveEffort is meant to
+// redundant, repeated-block data: the case AdaptiveEffort was meant to
 // help, by promoting such blocks from the default HashTable4 to BinaryTree
-// (deeper search, better ratio, more CPU per block).
+// (deeper search, better ratio, more CPU per block). That promotion is
+// currently disabled (see selectAdaptiveMatcher's doc comment in
+// writer2.go -- routing redundant blocks to BinaryTree hangs for minutes
+// on bintree.go's unbounded insertion depth), so On and Off are expected
+// to be statistically indistinguishable here for now: same matcher, same
+// ratio, same speed.
 func BenchmarkAdaptiveEffort_Redundant(b *testing.B) {
 	benchmarkAdaptiveEffortDataset(b, redundantBenchData(adaptiveEffortBenchDataSize))
 }
