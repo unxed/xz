@@ -315,3 +315,147 @@ func TestWriter2_StateTransitions(t *testing.T) {
 		t.Fatal("decompressed data mismatch")
 	}
 }
+
+// TestSelectAdaptiveMatcher checks that selectAdaptiveMatcher currently
+// returns HashTable4 for every score, i.e. that its BinaryTree arm stays
+// disabled regardless of adaptiveEffortThreshold. See the doc comment on
+// selectAdaptiveMatcher for the bintree.go insertion-depth hazard
+// (unxed/zipper#20, part 3) that makes routing to BinaryTree unsafe until
+// a follow-up ticket fixes it.
+func TestSelectAdaptiveMatcher(t *testing.T) {
+	cases := []struct {
+		score float64
+		want  MatchAlgorithm
+	}{
+		{0, HashTable4},
+		{adaptiveEffortThreshold - 0.01, HashTable4},
+		{adaptiveEffortThreshold, HashTable4},
+		{adaptiveEffortThreshold + 0.01, HashTable4},
+		{1, HashTable4},
+	}
+	for _, c := range cases {
+		if got := selectAdaptiveMatcher(c.score); got != c.want {
+			t.Errorf("selectAdaptiveMatcher(%v) = %v; want %v", c.score, got, c.want)
+		}
+	}
+}
+
+// TestAdaptiveMatcher_DisabledKeepsConfiguredMatcher makes sure
+// Writer2Config.AdaptiveEffort defaults to off and, while off, never
+// overrides Matcher regardless of what the block looks like -- the whole
+// point of the option being opt-in.
+func TestAdaptiveMatcher_DisabledKeepsConfiguredMatcher(t *testing.T) {
+	redundant := bytes.Repeat([]byte("redundant-chunk-data-block-"), 3000)
+	random := make([]byte, len(redundant))
+	rand.New(rand.NewSource(7)).Read(random)
+
+	for _, matcher := range []MatchAlgorithm{HashTable4, BinaryTree} {
+		cfg := Writer2Config{Matcher: matcher} // AdaptiveEffort left at its zero value (false)
+		for _, data := range [][]byte{redundant, random, nil} {
+			if got := adaptiveMatcher(cfg, data); got != matcher {
+				t.Errorf("adaptiveMatcher with AdaptiveEffort=false = %v; want configured Matcher %v unchanged", got, matcher)
+			}
+		}
+	}
+}
+
+// TestAdaptiveMatcher_RedundantVsRandom documents the current state of
+// part 2/3 of unxed/zipper#20: with AdaptiveEffort on, adaptiveMatcher (the
+// function worker calls for every real, non-minimal block) now returns
+// HashTable4 for both a highly redundant block and a near-random one. It
+// used to assert BinaryTree for the redundant case -- that arm was
+// disabled after CI found it hangs for minutes on exactly this class of
+// input; see the doc comment on selectAdaptiveMatcher for why.
+func TestAdaptiveMatcher_RedundantVsRandom(t *testing.T) {
+	// A block built from the same chunk repeated many times: near-random
+	// byte frequencies would not flag it, but DuplicateRatio does -- the
+	// same case internal/redundancy's own tests use to demonstrate its
+	// blind spot for pure entropy (see internal/redundancy's
+	// TestDuplicateRatio_RepeatedBlock). It is also, not coincidentally,
+	// the same short-period shape that makes BinaryTree unsafe here.
+	redundant := bytes.Repeat([]byte("redundant-chunk-data-block-"), 3000)
+
+	// A uniformly random block of the same size: both signals should read
+	// low (entropy close to 8 bits/byte, negligible duplicate windows).
+	random := make([]byte, len(redundant))
+	rand.New(rand.NewSource(7)).Read(random)
+
+	cfg := Writer2Config{AdaptiveEffort: true}
+
+	if got := adaptiveMatcher(cfg, redundant); got != HashTable4 {
+		t.Errorf("adaptiveMatcher on a highly redundant block = %v; want HashTable4 (BinaryTree arm currently disabled)", got)
+	}
+	if got := adaptiveMatcher(cfg, random); got != HashTable4 {
+		t.Errorf("adaptiveMatcher on a near-random block = %v; want HashTable4", got)
+	}
+}
+
+// TestWriter2_AdaptiveEffortRoundtrip is the integration-level safety net
+// for the wiring in worker(): with AdaptiveEffort on and Concurrency
+// pinned to 1, a single worker processes a run of highly redundant blocks
+// (a short ASCII pattern tiled to fill each block) interleaved with random
+// ones, and the stream still has to decompress back to the exact input.
+//
+// This used to also exercise adaptiveMatcher's lazy-build-and-cache path
+// for a second, genuinely different match algorithm (BinaryTree) on the
+// redundant blocks. It no longer does: selectAdaptiveMatcher's BinaryTree
+// arm is currently disabled (see its doc comment) precisely because these
+// same short-period redundant blocks drive bintree.go's unbounded-depth
+// insertion into an O(n^2)-class stall -- this test is what caught that,
+// via two CI runs timing out after 10 minutes instead of finishing. With
+// the arm disabled, adaptiveMatcher always agrees with the default
+// Matcher (HashTable4) here, so this test now mainly guards against a
+// regression back to that hang, plus basic roundtrip correctness.
+func TestWriter2_AdaptiveEffortRoundtrip(t *testing.T) {
+	blockSize := 1024 * 1024
+
+	redundantBlock := bytes.Repeat([]byte("redundant-chunk-data-block-"), blockSize/27+1)[:blockSize]
+
+	randomBlock := func(seed int64) []byte {
+		b := make([]byte, blockSize)
+		rand.New(rand.NewSource(seed)).Read(b)
+		return b
+	}
+
+	var payload []byte
+	payload = append(payload, redundantBlock...)
+	payload = append(payload, randomBlock(1)...)
+	payload = append(payload, redundantBlock...)
+	payload = append(payload, randomBlock(2)...)
+
+	var buf bytes.Buffer
+	w, err := Writer2Config{
+		DictCap:        blockSize,
+		Concurrency:    1,
+		AdaptiveEffort: true,
+	}.NewWriter2(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := w.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if buf.Len() >= len(payload) {
+		t.Errorf("compressed size %d not smaller than input %d; the redundant blocks should still compress well under AdaptiveEffort", buf.Len(), len(payload))
+	}
+
+	r, err := Reader2Config{DictCap: blockSize}.NewReader2(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+
+	decompressed, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !bytes.Equal(payload, decompressed) {
+		t.Fatal("decompressed data mismatch with AdaptiveEffort enabled")
+	}
+}
