@@ -53,6 +53,25 @@ type binTree struct {
 // reference.
 const null uint32 = 1<<32 - 1
 
+// maxTreeDepth bounds how many tree levels binTree.add and
+// binTree.remove will walk while looking for an insertion point or an
+// in-order predecessor. Without this bound, both operations can cost
+// O(current chain length) on periodic or otherwise redundant input:
+// most insertions collapse onto a handful of degenerate chains, so a
+// single block can cost O(n^2) instead of O(n) to index (see
+// https://github.com/unxed/zipper/issues/32). The value mirrors
+// liblzma's rule of thumb for its BT4 depth_limit, 16 + niceLen/2,
+// using this package's own "nice enough" match length (nAccept in
+// NextOp's matchParams, 64 in the normal, non-minimal mode) in place
+// of niceLen.
+//
+// Beyond this depth the tree is no longer guaranteed to be strictly
+// ordered, but that only costs potential matches: match() always
+// re-verifies every candidate against the real buffer before
+// accepting it (see NextOp), so correctness never depends on the
+// tree being fully ordered.
+const maxTreeDepth = 48
+
 // newBinTree initializes the binTree structure. The capacity defines
 // the size of the buffer and defines the maximum distance for which
 // matches will be found.
@@ -134,8 +153,14 @@ func (t *binTree) add(v uint32) {
 	}
 	x := vn.x
 	p := t.root
-	// Search for the right leave link and add the new node.
-	for {
+	// Search for the right leave link and add the new node. depth is
+	// capped at maxTreeDepth (see its doc comment): once reached, v is
+	// spliced in between the current node and its child instead of
+	// continuing to walk down a possibly very long, degenerate chain.
+	// v adopts the whole remaining subtree as its own child, so the
+	// tree stays fully connected - nothing is detached or lost, and
+	// every node, however deep, remains reachable and removable later.
+	for depth := 0; ; depth++ {
 		pn := &t.node[p]
 		if x <= pn.x {
 			if pn.l == null {
@@ -143,11 +168,27 @@ func (t *binTree) add(v uint32) {
 				vn.p = p
 				return
 			}
+			if depth >= maxTreeDepth {
+				c := pn.l
+				pn.l = v
+				vn.p = p
+				vn.l = c
+				t.node[c].p = v
+				return
+			}
 			p = pn.l
 		} else {
 			if pn.r == null {
 				pn.r = v
 				vn.p = p
+				return
+			}
+			if depth >= maxTreeDepth {
+				c := pn.r
+				pn.r = v
+				vn.p = p
+				vn.r = c
+				t.node[c].p = v
 				return
 			}
 			p = pn.r
@@ -190,38 +231,55 @@ func (t *binTree) remove(v uint32) {
 		return
 	}
 
-	// Search the in-order predecessor u.
-	un := &t.node[l]
-	ur := un.r
-	if ur == null {
-		// In order predecessor is l. Move it up.
-		un.r = r
-		t.node[r].p = l
-		un.p = p
-		*ptr = l
-		return
-	}
-	var u uint32
-	for {
-		// Look for the max value in the tree where l is root.
-		u = ur
-		ur = t.node[u].r
-		if ur == null {
+	// Search the in-order predecessor u, i.e. the node with the
+	// maximum value in the subtree rooted at l, by walking its right
+	// spine. That walk is capped at maxTreeDepth steps (see its doc
+	// comment): l's subtree can contain nodes chained past
+	// binTree.add's own cap, so an unbounded walk here would be just
+	// as susceptible to the degenerate O(n) chains from
+	// https://github.com/unxed/zipper/issues/32 as add's used to be.
+	u := l
+	for steps := 0; ; steps++ {
+		if t.node[u].r == null {
 			break
 		}
-	}
-	// replace u with ul
-	un = &t.node[u]
-	ul := un.l
-	up := un.p
-	t.node[up].r = ul
-	if ul != null {
-		t.node[ul].p = up
+		if steps >= maxTreeDepth {
+			break
+		}
+		u = t.node[u].r
 	}
 
+	if t.node[u].r != null {
+		// u is not the true in-order predecessor - it still has an
+		// unexplored right subtree. Detach it from wherever it
+		// currently sits with a plain recursive removal instead of
+		// continuing the walk: remove is already correct for any
+		// node regardless of its own children, so this keeps the
+		// cost bounded the same way add's cap does, at the price of
+		// the tree no longer being strictly ordered below this point
+		// (see maxTreeDepth's doc comment for why that is safe).
+		t.remove(u)
+	} else if u != l {
+		// u is l's true rightmost descendant with no right child of
+		// its own: detach it from that position by promoting its
+		// left child.
+		un := &t.node[u]
+		up, ul := un.p, un.l
+		t.node[up].r = ul
+		if ul != null {
+			t.node[ul].p = up
+		}
+	}
+	// else: u == l and l has no right child - nothing to detach, l's
+	// own left child is left untouched below.
+
 	// replace v by u
-	un.l, un.r = l, r
-	t.node[l].p = u
+	un := &t.node[u]
+	if u != l {
+		un.l = l
+		t.node[l].p = u
+	}
+	un.r = r
 	t.node[r].p = u
 	*ptr = u
 	un.p = p
