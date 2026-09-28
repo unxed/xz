@@ -10,6 +10,8 @@ import (
 	"io"
 	"runtime"
 	"sync"
+
+	"github.com/unxed/xz/internal/redundancy"
 )
 
 // Writer2Config is used to create a Writer2 using parameters.
@@ -578,19 +580,13 @@ func selectAdaptiveMatcher(score float64) MatchAlgorithm {
 
 // adaptiveMatcher returns the MatchAlgorithm that should compress data: the
 // configured Matcher unchanged when cfg.AdaptiveEffort is off (the
-// pre-existing, unconditional behavior), or, when it is on, HashTable4
-// (selectAdaptiveMatcher's only current output; see its doc comment for
-// why). It intentionally does not call internal/redundancy.EstimateRedundancy
-// in that case: BenchmarkAdaptiveEffort_Redundant caught that doing so
-// anyway, only to hand the discarded score to a function that always
-// returns HashTable4, cost real CPU (~47% slower ns/op there than
-// AdaptiveEffort=false) for zero behavioral difference. Reinstate that
-// call only alongside re-enabling selectAdaptiveMatcher's BinaryTree arm.
+// pre-existing, unconditional behavior), or a per-block choice driven by
+// internal/redundancy.EstimateRedundancy(data) when it is on.
 func adaptiveMatcher(cfg Writer2Config, data []byte) MatchAlgorithm {
 	if !cfg.AdaptiveEffort {
 		return cfg.Matcher
 	}
-	return selectAdaptiveMatcher(0)
+	return selectAdaptiveMatcher(redundancy.EstimateRedundancy(data))
 }
 
 func (w *Writer2) worker() {
