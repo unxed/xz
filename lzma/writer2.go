@@ -29,22 +29,22 @@ type Writer2Config struct {
 	Matcher MatchAlgorithm
 	// Number of concurrent compression workers. If 0, runtime.GOMAXPROCS(0) is used.
 	Concurrency int
-	// AdaptiveEffort was designed to enable per-block compression-effort
-	// selection: each parallel block (the same granularity at which
-	// Writer2 already starts a fresh LZMA2 chunk sequence) would be
-	// scored with internal/redundancy.EstimateRedundancy before
-	// compression, and a highly redundant block matched with BinaryTree
-	// (deeper search, better ratio) while a near-random block would be
-	// matched with the cheaper HashTable4, overriding Matcher for that
-	// one block.
+	// AdaptiveEffort enables per-block compression-effort selection: each
+	// parallel block (the same granularity at which Writer2 already
+	// starts a fresh LZMA2 chunk sequence) is scored with
+	// internal/redundancy.EstimateRedundancy before compression, and a
+	// highly redundant block is matched with BinaryTree (deeper search,
+	// better ratio) while a near-random block is matched with the
+	// cheaper HashTable4, overriding Matcher for that one block. Blocks
+	// already routed around the matcher entirely by the existing
+	// near-incompressible fast path (stored uncompressed) are
+	// unaffected.
 	//
-	// That BinaryTree arm is currently disabled: see the doc comment on
-	// selectAdaptiveMatcher for a real, pre-existing hazard in
-	// bintree.go it triggers on exactly the kind of data this option
-	// targets (unxed/zipper#20, part 3). Until a follow-up ticket fixes
-	// that, this field, when true, behaves identically to false --
-	// Matcher stays fixed for the whole stream exactly as before this
-	// option existed. It defaults to false regardless.
+	// This is deliberately a simple, single-threshold policy (see
+	// selectAdaptiveMatcher): the trade-off has not been validated
+	// against real-world data yet (unxed/zipper#20, part 3), so it
+	// defaults to false, which keeps Matcher fixed for the whole stream
+	// exactly as before this option existed.
 	AdaptiveEffort bool
 }
 
@@ -531,50 +531,19 @@ func compressBlockChunks(sw *seqWriter2, job *chunkJob) error {
 	return jobErr
 }
 
-// adaptiveEffortThreshold was the internal/redundancy.EstimateRedundancy
-// score at or above which selectAdaptiveMatcher picked BinaryTree instead
-// of HashTable4. Kept only as documentation of the originally intended
-// policy threshold; see selectAdaptiveMatcher for why it is not currently
-// acted on.
+// adaptiveEffortThreshold is the internal/redundancy.EstimateRedundancy
+// score at or above which adaptiveMatcher picks BinaryTree (deeper search,
+// better ratio) instead of HashTable4 (cheap) when AdaptiveEffort is
+// enabled. This is a first, deliberately simple cut, not a value tuned
+// against real-world data -- see unxed/zipper#20, part 3.
 const adaptiveEffortThreshold = 0.5
 
-// selectAdaptiveMatcher was meant to map a redundancy score in [0, 1] to
-// the match algorithm adaptiveMatcher should use for a block that scored
-// it: BinaryTree (deeper search, better ratio) at or above
-// adaptiveEffortThreshold, HashTable4 (cheap) below it.
-//
-// It unconditionally returns HashTable4 right now. Investigating the CI
-// hang in TestWriter2_AdaptiveEffortRoundtrip (unxed/zipper#20, part 3)
-// found a real, pre-existing defect in bintree.go: binTree.add has no
-// bound on how deep an insertion may walk (unlike its match search, which
-// matchParams.check does cap). A block whose content repeats with a short
-// period relative to the 4-byte match-finder word -- a run of the same
-// padding byte, a repeated header, or, as in the roundtrip test, a short
-// ASCII pattern tiled to fill a block -- collapses almost all of that
-// block's insertions onto a handful of degenerate chains, each insertion
-// costing O(current chain length), i.e. an O(n^2)-class cost in the block
-// size. Two independent CI runs (actions/runs/36296627040 and
-// .../36297083159) both hit the 10-minute test timeout inside binTree.add
-// (via NextOp) while compressing a single 1 MiB block of exactly this kind
-// of data with BinaryTree; the arithmetic backs that up too -- that
-// block's 27-byte-periodic content collapses onto 27 chains averaging
-// ~38845 nodes each, tens of billions of node visits, further amplified by
-// -race instrumentation.
-//
-// That is exactly the class of input EstimateRedundancy is designed to
-// flag as "highly redundant" -- padding and repeated structure are common
-// in real archives, not just this test's construction -- so wiring this
-// function's original BinaryTree branch into production would trade an
-// occasional ratio win for an unbounded stall on the very inputs it
-// targets. Fixing that means bounding insertion depth in bintree.go itself
-// (mirroring the depth/nice-length limits real BT4 implementations use),
-// which touches the match finder every existing BinaryTree caller relies
-// on and needs its own dedicated verification -- out of scope for this
-// VBR-heuristics ticket. Until that lands in a follow-up ticket,
-// AdaptiveEffort as a whole is a safe no-op: same matcher, same ratio,
-// same speed as AdaptiveEffort=false.
+// selectAdaptiveMatcher maps a redundancy score in [0, 1] to the match
+// algorithm adaptiveMatcher should use for a block that scored it.
 func selectAdaptiveMatcher(score float64) MatchAlgorithm {
-	_ = score
+	if score >= adaptiveEffortThreshold {
+		return BinaryTree
+	}
 	return HashTable4
 }
 
