@@ -188,6 +188,11 @@ func (c *literalCodec) Encode(e *rangeEncoder, s byte,
 
 // Decode decodes a literal byte using the range decoder as well as the LZMA
 // state, a match byte, and the literal state.
+//
+// The bits of a literal are close to incompressible for the CPU branch
+// predictor, so every bit is decoded without a conditional branch: the
+// outcome is turned into an all-ones or all-zero mask that selects the new
+// range, code and probability. Only the rare input refill still branches.
 func (c *literalCodec) Decode(d *rangeDecoder,
 	state uint32, match byte, litState uint32,
 ) byte {
@@ -203,25 +208,22 @@ func (c *literalCodec) Decode(d *rangeDecoder,
 	buf := &d.buf
 
 	if state >= 7 {
+		// offs is 0x100 while the decoded bits equal the match byte and 0
+		// afterwards, which turns the context into the plain symbol.
+		offs := uint32(0x100)
 		m := uint32(match)
-		for {
-			matchBit := (m >> 7) & 1
+		for symbol < 0x100 {
 			m <<= 1
-			i := ((1 + matchBit) << 8) | symbol
+			matchBit := m & offs
+			i := offs + matchBit + symbol
 
 			val := uint32(probs[i])
 			bound := (nrange >> 11) * val
-			var bit uint32
-			if code < bound {
-				nrange = bound
-				probs[i] = prob(val + (2048-val)>>5)
-				bit = 0
-			} else {
-				code -= bound
-				nrange -= bound
-				probs[i] = prob(val - (val >> 5))
-				bit = 1
-			}
+			// mask is all ones if the decoded bit is 1, otherwise zero.
+			mask := uint32((uint64(code)-uint64(bound))>>63) - 1
+			code -= bound & mask
+			nrange = bound + ((nrange - bound - bound) & mask)
+			probs[i] = prob(val + (((2048 - val) >> 5) &^ mask) - ((val >> 5) & mask))
 			if nrange < (1 << 24) {
 				nrange <<= 8
 				if pos < limit {
@@ -239,29 +241,22 @@ func (c *literalCodec) Decode(d *rangeDecoder,
 				}
 			}
 
-			symbol = (symbol << 1) | bit
-			if matchBit != bit {
-				break
-			}
-			if symbol >= 0x100 {
-				break
-			}
+			symbol = (symbol << 1) | (mask & 1)
+			offs &= matchBit ^ ^mask
 		}
+		d.nrange = nrange
+		d.code = code
+		d.pos = pos
+		return byte(symbol - 0x100)
 	}
 	for symbol < 0x100 {
 		val := uint32(probs[symbol])
 		bound := (nrange >> 11) * val
-		var bit uint32
-		if code < bound {
-			nrange = bound
-			probs[symbol] = prob(val + (2048-val)>>5)
-			bit = 0
-		} else {
-			code -= bound
-			nrange -= bound
-			probs[symbol] = prob(val - (val >> 5))
-			bit = 1
-		}
+		// mask is all ones if the decoded bit is 1, otherwise zero.
+		mask := uint32((uint64(code)-uint64(bound))>>63) - 1
+		code -= bound & mask
+		nrange = bound + ((nrange - bound - bound) & mask)
+		probs[symbol] = prob(val + (((2048 - val) >> 5) &^ mask) - ((val >> 5) & mask))
 		if nrange < (1 << 24) {
 			nrange <<= 8
 			if pos < limit {
@@ -278,7 +273,7 @@ func (c *literalCodec) Decode(d *rangeDecoder,
 				limit = d.limit
 			}
 		}
-		symbol = (symbol << 1) | bit
+		symbol = (symbol << 1) | (mask & 1)
 	}
 	d.nrange = nrange
 	d.code = code
