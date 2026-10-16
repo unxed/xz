@@ -344,6 +344,14 @@ type parallelReader2 struct {
 	wg      sync.WaitGroup
 	quit    chan struct{}
 
+	// slots bounds the read-ahead: a segment is handed to a worker only
+	// after taking a slot, and the slot is returned once the reader has
+	// consumed that segment. Without it the workers would decode every
+	// segment of the stream into memory, however far the reader is behind
+	// and even if it stops reading and is never closed.
+	slots  chan struct{}
+	window int
+
 	currentSeg int
 	currentOff int
 }
@@ -377,7 +385,9 @@ func (c Reader2Config) newParallelReader2(r io.ReaderAt, segments []segment) (io
 		numWorkers = 1
 	}
 
-	workCh := make(chan int, numWorkers*2)
+	pr.window = numWorkers * 2
+	pr.slots = make(chan struct{}, pr.window)
+	workCh := make(chan int, pr.window)
 
 	for i := 0; i < numWorkers; i++ {
 		pr.wg.Add(1)
@@ -387,6 +397,11 @@ func (c Reader2Config) newParallelReader2(r io.ReaderAt, segments []segment) (io
 	go func() {
 		defer close(workCh)
 		for i := range segments {
+			select {
+			case pr.slots <- struct{}{}:
+			case <-pr.quit:
+				return
+			}
 			select {
 			case workCh <- i:
 			case <-pr.quit:
@@ -461,6 +476,7 @@ func (pr *parallelReader2) Read(p []byte) (n int, err error) {
 		res.data = nil
 		pr.currentSeg++
 		pr.currentOff = 0
+		<-pr.slots
 	}
 
 	return n, nil
